@@ -1,0 +1,129 @@
+1. To bind and unbind the /dev/wowpanic0 device from host
+   To unbind the /dev/wowpanic0 device from the kernal hid bus,do
+      sudo sh -c " echo '1-1:1.0' > /sys/bus/usb/usbhid/unbind"
+   To bind the /dev/wowpanic0 device to our driver, do
+      sudo sh -c " echo '1-1:1.0' > /sys/bus/usb/zxypanic/bind"
+   Note: 1-1:1.0 can be found by running 'tree' command under /sys/bus/usb
+         combined with 'lsusb' and 'dmesg' command
+
+2. A scripts to setup raseberry Pi4 as a hid usb peripheral device.
+#!/bin/bash
+
+# Load libcomposite kernel module
+# This module allows us to create a USB gadget device
+modprobe libcomposite
+
+# Enter the configfs directory for USB gadget
+cd /sys/kernel/config/usb_gadget/
+
+# Create a new gadget device named "panic_device"
+mkdir -p panic_device
+cd panic_device
+
+# --------------------------
+# Set USB device identifiers
+# --------------------------
+# Vendor ID (must match your Linux driver)
+echo 0x1130 > idVendor
+# Product ID (must match your Linux driver)
+echo 0x0202 > idProduct
+
+# USB version (2.0)
+echo 0x0200 > bcdUSB
+# Device version
+echo 0x0100 > bcdDevice
+
+# --------------------------
+# Set device description strings
+# --------------------------
+mkdir -p strings/0x409
+echo "12345678"         > strings/0x409/serialnumber
+echo "PiPanic"          > strings/0x409/manufacturer
+echo "PanicButton"      > strings/0x409/product
+
+# --------------------------
+# Create USB configuration
+# --------------------------
+mkdir -p configs/c.1/strings/0x409
+echo "Conf"             > configs/c.1/strings/0x409/configuration
+# Max power consumption (unit: 2mA, 100 = 200mA)
+echo 100                > configs/c.1/MaxPower
+
+# --------------------------
+# Create HID function (button)
+# --------------------------
+mkdir -p functions/hid.usb0
+
+# HID protocol: mouse/button type
+echo 0 > functions/hid.usb0/protocol
+echo 0 > functions/hid.usb0/subclass
+# Report length: 1 byte (only button state)
+echo 8 > functions/hid.usb0/report_length
+
+# HID Report Descriptor: tells the host this is a 1-button mouse/button
+#echo -ne \\x05\\x01\\x09\\x02\\xA1\\x01\\x09\\x01\\x15\\x00\\x25\\x01\\x75\\x01\\x95\\x01\\x81\\x02\\xC0 > functions/hid.usb0/report_desc
+echo -ne '\x06\x00\xff\x09\x01\xa1\x01\x15\x00\x26\xff\x00\x75\x08\x95\x08\x81\x02\xc0' > functions/hid.usb0/report_desc
+
+
+# --------------------------
+# Attach HID function to configuration
+# --------------------------
+ln -s functions/hid.usb0 configs/c.1/
+
+# --------------------------
+# Bind gadget to USB controller (enable the device)
+# --------------------------
+ls /sys/class/udc > UDC
+
+echo "USB Panic Button gadget setup completed."
+
+
+3. A program for rasberry Pi4 to simulate the button press.
+#include <stdio.h>
+#include <fcntl.h>
+#include <unistd.h>
+
+int main() {
+    int fd = open("/dev/hidg0", O_WRONLY);
+    unsigned char report[8] = {0};
+    int rc = 0;
+
+    if(fd<0){
+            perror("open file failed");
+            return -1;
+    }
+    printf("Button Ready\n");
+    while (1) {
+        getchar();
+        report[0] ^= 1;
+        rc = write(fd, report, 8);
+        printf("Button: %d rc: %d\n", report[0], rc);
+    }
+}
+
+4. A program for host to test the driver to indecat the button status
+#include <stdio.h>
+#include <fcntl.h>
+#include <sys/ioctl.h>
+#include <unistd.h>
+
+int
+main ()
+{
+  int fd = open ("/dev/wowpanicb0", O_RDWR);
+  if (fd < 0)
+    {
+      perror ("open failed");
+      return -1;
+    }
+  unsigned int val;
+  while (1)
+    {
+      ioctl (fd, 0, &val);
+      printf ("Host Button: %d\n", val);
+      sleep (1);
+    }
+}
+ 
+
+
