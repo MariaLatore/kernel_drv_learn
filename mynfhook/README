@@ -1,0 +1,67 @@
+1. To test this module, we should simulate a environment like:
+ns_in                              root namespace                              ns_out
+10.0.10.2/24                       10.0.10.1/24       10.0.20.1/24            10.0.20.2/24
+02:00:00:00:00:44                  02:00:00:00:00:33  02:00:00:00:00:11       02:00:00:00:00:22
+
+[veth_in_ns]   <--------------->   [veth_in_root]      [veth_out_root]   <--------------->   [veth_out_ns]
+                                        ^                      |
+                                        |                      |
+                                        |                      |
+                                   module hooks here           +---- packets re-sent here
+                                   (NF_INET_PRE_ROUTING)
+
+2. To simulate above env, do following bash cmd:
+# Create two network namespaces:
+# ns_in  = simulated ingress host
+# ns_out = simulated egress-side host
+sudo ip netns add ns_in
+sudo ip netns add ns_out
+
+# Create two veth pairs:
+# 1) ingress pair:  veth_in_root  <-> veth_in_ns
+# 2) egress pair:   veth_out_root <-> veth_out_ns
+sudo ip link add veth_in_root type veth peer name veth_in_ns
+sudo ip link add veth_out_root type veth peer name veth_out_ns
+
+# Move one end of each veth pair into the corresponding namespace
+# so each pair connects root namespace to a different netns
+sudo ip link set veth_in_ns netns ns_in
+sudo ip link set veth_out_ns netns ns_out
+
+# Set MAC addresses for the egress-side veth pair
+# These should match the MACs hardcoded in the kernel module:
+# veth_out_root = source MAC used by the module
+# veth_out_ns   = destination MAC used by the module
+sudo ip link set veth_out_root address 02:00:00:00:00:11
+sudo ip netns exec ns_out ip link set veth_out_ns address 02:00:00:00:00:22
+
+# Set MAC addresses for the ingress-side veth pair
+# These are mainly for clarity/debugging in packet captures
+sudo ip link set veth_in_root address 02:00:00:00:00:33
+sudo ip netns exec ns_in ip link set veth_in_ns address 02:00:00:00:00:44
+
+# Assign IP addresses on the root-namespace side
+# veth_in_root  = ingress-facing interface
+# veth_out_root = egress-facing interface
+sudo ip addr add 10.0.10.1/24 dev veth_in_root
+sudo ip addr add 10.0.20.1/24 dev veth_out_root
+
+# Assign IP addresses on the namespace side
+# ns_in sends traffic toward 10.0.10.1
+# ns_out receives the re-sent packets on 10.0.20.2
+sudo ip netns exec ns_in ip addr add 10.0.10.2/24 dev veth_in_ns
+sudo ip netns exec ns_out ip addr add 10.0.20.2/24 dev veth_out_ns
+
+# Bring up the root-side interfaces
+sudo ip link set veth_in_root up
+sudo ip link set veth_out_root up
+
+# Bring up loopback and ingress-side interface inside ns_in
+sudo ip netns exec ns_in ip link set lo up
+sudo ip netns exec ns_in ip link set veth_in_ns up
+
+# Bring up loopback and egress-side interface inside ns_out
+sudo ip netns exec ns_out ip link set lo up
+sudo ip netns exec ns_out ip link set veth_out_ns up
+
+3. Note that the mac addr and ip addr should not be changed, because it is hardcoded in the module src code.
