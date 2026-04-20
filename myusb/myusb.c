@@ -266,7 +266,7 @@ static void panicb_disconnect(struct usb_interface *interface) {
 }
 
 static struct usb_driver panicb_driver = {
-    .name = "panicb",
+    .name = "zxypanicb",
     .probe = panicb_probe,
     .disconnect = panicb_disconnect,
     .id_table = id_table,
