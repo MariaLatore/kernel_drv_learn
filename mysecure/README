@@ -1,0 +1,137 @@
+1. To make this work, do the following:
+	a) copy the dir mysecure under <kernel src>/driver/ 
+	b) add Kconfig:
+		zxy@debian:~/workspace/30Gsda5/linux-6.12.75$ tail drivers/Kconfig 
+		source "drivers/hte/Kconfig"
+
+		source "drivers/cdx/Kconfig"
+
+		source "drivers/dpll/Kconfig"
+
+		source "drivers/helloworld/Kconfig"
+
+		source "drivers/mysecure/Kconfig"
+		endmenu
+		zxy@debian:~/workspace/30Gsda5/linux-6.12.75$ 
+	c) add Makefile
+		zxy@debian:~/workspace/30Gsda5/linux-6.12.75$ tail drivers/Makefile 
+		obj-$(CONFIG_MOST)		+= most/
+		obj-$(CONFIG_PECI)		+= peci/
+		obj-$(CONFIG_HTE)		+= hte/
+		obj-$(CONFIG_DRM_ACCEL)		+= accel/
+		obj-$(CONFIG_CDX_BUS)		+= cdx/
+		obj-$(CONFIG_DPLL)		+= dpll/
+
+		obj-$(CONFIG_S390)		+= s390/
+		obj-$(CONFIG_HELLOWORLD)        += helloworld/
+		obj-$(CONFIG_MYSECURE)          += mysecure/
+		zxy@debian:~/workspace/30Gsda5/linux-6.12.75$ 
+	d) change the .config file
+		zxy@debian:~/workspace/30Gsda5/linux-6.12.75$ grep -ri 'mysecure' .config
+		# MYSECURE support
+		CONFIG_MYSECURE=y
+		# end of MYSECURE support
+		CONFIG_LSM="landlock,lockdown,yama,loadpin,safesetid,selinux,smack,tomoyo,apparmor,ipe,bpf,mysecure"
+		zxy@debian:~/workspace/30Gsda5/linux-6.12.75$ 
+	e) build the kernel and boot with below command
+		qemu-system-x86_64 \
+		  -kernel ~/workspace/30Gsda5/linux-6.12.75/arch/x86/boot/bzImage \
+		  -hda ~/workspace/30Gsda5/buildroot/output/images/rootfs.ext2 \
+		  -append "root=/dev/sda rootfstype=ext2 console=ttyS0,115200 noapic rootwait lsm=capability,zxylsm"\
+		  -nographic -m 1024
+	  if not use this command, will enounter fail:
+		# dmesg | grep -Ei 'zxylsm|mysecure|LSM'
+		[ 0.000000] Command line: root=/dev/sda rootfstype=ext2 console=ttyS0,115200 noapic rootwait lsm=capability,selinux,zxylsm
+		[ 0.060965] Kernel command line: root=/dev/sda rootfstype=ext2 console=ttyS0,115200 noapic rootwait lsm=capability,selinux,zxylsm
+             ***[ 0.189588] cmdline: out of LSM static calls!?
+		[ 0.189588] WARNING: CPU: 0 PID: 0 at security/security.c:221 append_ordered_lsm+0x54/0xb0
+		[ 0.189588] RIP: 0010:append_ordered_lsm+0x54/0xb0
+		[ 0.190588] ordered_lsm_parse+0x129/0x260
+		[ 0.191588] LSM: initializing lsm=capability,selinux
+		#
+
+2. To simply build/clean this module:
+zxy@debian:~/workspace/30Gsda5/linux-6.12.75$ make M=drivers/mysecure clean
+zxy@debian:~/workspace/30Gsda5/linux-6.12.75$ make M=drivers/mysecure V=1
+make --no-print-directory -C /home/zxy/workspace/30Gsda5/linux-6.12.75 \
+-f /home/zxy/workspace/30Gsda5/linux-6.12.75/Makefile 
+make -f ./scripts/Makefile.build obj=drivers/mysecure need-builtin=1 need-modorder=1 
+# cmd_gen_order drivers/mysecure/modules.order
+  {  :; } > drivers/mysecure/modules.order
+sh ./scripts/modules-check.sh drivers/mysecure/modules.order
+make -f ./scripts/Makefile.modpost
+# MODPOST drivers/mysecure/Module.symvers
+   scripts/mod/modpost -M        -o drivers/mysecure/Module.symvers -n -T drivers/mysecure/modules.order -i Module.symvers -e 
+make -f ./scripts/Makefile.modfinal
+zxy@debian:~/workspace/30Gsda5/linux-6.12.75$ 
+
+3.test log:
+# cat hello 
+[   60.519031] zxylsm: check pid=104 mask=0x81
+[   60.519916] zxylsm: check pid=104 mask=0x81
+[   60.519993] zxylsm: check pid=104 mask=0x81
+[   60.520052] zxylsm: check pid=104 mask=0x21
+[   60.520342] zxylsm: check pid=104 mask=0x81
+[   60.520409] zxylsm: check pid=104 mask=0x81
+[   60.520463] zxylsm: check pid=104 mask=0x21
+[   60.520524] zxylsm: check pid=104 mask=0x4
+[   60.520583] zxylsm: check pid=104 mask=0x1
+[   60.520646] zxylsm: check pid=104 mask=0x4
+[   60.522064] zxylsm: check pid=104 mask=0x81
+[   60.522221] zxylsm: check pid=104 mask=0x81
+[   60.522339] zxylsm: check pid=104 mask=0x81
+[   60.522403] zxylsm: check pid=104 mask=0x81
+[   60.522486] zxylsm: check pid=104 mask=0x81
+[   60.522547] zxylsm: check pid=104 mask=0x81
+[   60.522615] zxylsm: check pid=104 mask=0x24
+[   60.523195] zxylsm: check pid=104 mask=0x81
+[   60.523284] zxylsm: check pid=104 mask=0x81
+[   60.523349] zxylsm: check pid=104 mask=0x24
+[   60.525051] zxylsm: check pid=104 mask=0x81
+[   60.525217] zxylsm: check pid=104 mask=0x24
+hello world!
+# [   60.531935] zxylsm: check pid=72 mask=0x81
+[   60.539132] zxylsm: check pid=72 mask=0x81
+[   60.539390] zxylsm: check pid=72 mask=0x81
+[   60.539582] zxylsm: check pid=72 mask=0x81
+[   60.539714] zxylsm: check pid=72 mask=0x81
+[   60.540056] zxylsm: check pid=72 mask=0x2a
+
+# rm hello
+[   70.549695] zxylsm: check pid=99 mask=0x81
+[   70.550664] zxylsm: check pid=99 mask=0x81
+[   70.552375] zxylsm: check pid=72 mask=0x81
+[   70.552655] zxylsm: check pid=72 mask=0x81
+[   70.552716] zxylsm: check pid=72 mask=0x81
+[   70.552765] zxylsm: check pid=72 mask=0x81
+[   70.552813] zxylsm: check pid=72 mask=0x81
+[   70.552870] zxylsm: check pid=72 mask=0x2a
+[   70.553175] zxylsm: check pid=99 mask=0x1
+[   70.554207] zxylsm: check pid=105 mask=0x81
+[   70.554300] zxylsm: check pid=105 mask=0x81
+[   70.554358] zxylsm: check pid=105 mask=0x81
+[   70.554412] zxylsm: check pid=105 mask=0x21
+[   70.554659] zxylsm: check pid=105 mask=0x81
+[   70.554720] zxylsm: check pid=105 mask=0x81
+[   70.554771] zxylsm: check pid=105 mask=0x21
+[   70.561872] zxylsm: check pid=105 mask=0x4
+[   70.562527] zxylsm: check pid=105 mask=0x1
+[   70.562777] zxylsm: check pid=105 mask=0x4
+[   70.564341] zxylsm: check pid=105 mask=0x81
+[   70.574337] zxylsm: check pid=105 mask=0x81
+[   70.574714] zxylsm: check pid=105 mask=0x81
+[   70.575127] zxylsm: check pid=105 mask=0x81
+[   70.576642] zxylsm: check pid=105 mask=0x81
+[   70.577265] zxylsm: check pid=105 mask=0x81
+[   70.577690] zxylsm: check pid=105 mask=0x24
+[   70.578524] zxylsm: check pid=105 mask=0x81
+[   70.579057] zxylsm: check pid=105 mask=0x81
+[   70.579523] zxylsm: check pid=105 mask=0x24
+[   70.581877] zxylsm: check pid=105 mask=0x81
+[   70.592342] zxylsm: check pid=105 mask=0x81
+[   70.592919] zxylsm: check pid=105 mask=0x12
+[   70.593229] zxylsm: check pid=105 mask=0x81
+[   70.593565] zxylsm: check pid=105 mask=0x3
+[   70.593819] zxylsm: check pid=105 mask=0x2
+[   70.594052] zxtlsm: inode_unlink pid=105 dir=158
+# 

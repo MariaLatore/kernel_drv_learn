@@ -1,0 +1,7 @@
+menu "MYSECURE support"
+config MYSECURE
+	tristate "MYSECURE Support"
+	default m
+	help
+	Say Y to enable MYSECURE support, M to compile it as a module
+endmenu
