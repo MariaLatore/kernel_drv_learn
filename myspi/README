@@ -1,0 +1,26 @@
+1. grep 'zxyspidev' to see how the device and driver match
+
+2. The tree would be 
+zxy@debian:/sys/bus/spi$ tree
+.
+├── devices
+│   └── spi0.0 -> ../../../devices/platform/fake-spi-parent/spi_master/spi0/spi0.0
+├── drivers
+│   ├── spidev
+│   │   ├── bind
+│   │   ├── uevent
+│   │   └── unbind
+│   └── zxy_spidev
+│       ├── bind
+│       ├── module -> ../../../../module/myspidrv
+│       ├── spi0.0 -> ../../../../devices/platform/fake-spi-parent/spi_master/spi0/spi0.0
+│       ├── uevent
+│       └── unbind
+├── drivers_autoprobe
+├── drivers_probe
+└── uevent
+
+8 directories, 9 files
+zxy@debian:/sys/bus/spi$ 
+
+after insmod both device and driver.

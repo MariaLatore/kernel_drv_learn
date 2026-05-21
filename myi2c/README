@@ -1,0 +1,405 @@
+# README.md
+
+## Test `myi2c` SSD1306-like I²C client driver with `i2c-stub`
+
+This document explains how to test the `myi2c` kernel module in a Debian VM using the Linux `i2c-stub` virtual adapter.
+
+---
+
+## 1. Purpose
+
+This test verifies that the driver can:
+
+- load successfully
+- find the target I²C adapter
+- create an I²C client device at address `0x3c`
+- bind the client to the driver
+- execute the `probe()` callback
+- send SSD1306-style I²C write traffic
+- unload cleanly and execute the `remove()` callback
+
+This test does not verify:
+
+- real OLED display output
+- actual SSD1306 hardware behavior
+- visual framebuffer rendering
+
+---
+
+## 2. Architecture
+
+Your driver is an I²C client driver, not an I²C master/adapter driver.
+
+It runs on top of the Linux I²C core and uses the `i2c-stub` virtual adapter as the transport layer.
+
+### Architecture figure
+
++--------------------------------------------------+
+|            Your client driver (myi2c)            |
+|                                                  |
+|  name: BPB_DEVICE                                |
+|  probe(): etx_oled_probe()                       |
+|  sends SSD1306-style writes                      |
++-------------------------|------------------------+
+                          |
+                          v
++--------------------------------------------------+
+|                  I2C client device               |
+|                    1-003c                        |
+|             name = BPB_DEVICE                    |
++-------------------------|------------------------+
+                          |
+                          v
++--------------------------------------------------+
+|                    I2C core                      |
+|          matches device to driver                |
++-------------------------|------------------------+
+                          |
+                          v
++--------------------------------------------------+
+|               i2c-1 adapter (i2c-stub)           |
+|      fake bus with fake chips at 0x3c, 0x50      |
++-------------------------|------------------------+
+                          |
+                          v
++-------------------+              +----------------+
+| fake OLED at 0x3c |              | fake EEPROM    |
+| bound to myi2c    |              | 0x50 bound at24|
++-------------------+              +----------------+
+
+### Simplified stack
+
+myi2c driver -> Linux I2C core -> i2c-stub adapter -> fake device 0x3c
+
+---
+
+## 3. Test environment
+
+Example environment:
+
+- Debian VM
+- kernel headers installed
+- kernel module build environment available
+- i2c-tools installed
+- i2c-stub available
+- fake EEPROM already present at 0x50
+- fake OLED address to be tested at 0x3c
+
+---
+
+## 4. Driver under test
+
+The module under test is:
+
+- module file: myi2c.ko
+- I²C device name: BPB_DEVICE
+- I²C device address: 0x3c
+- target bus: i2c-1
+
+---
+
+## 5. Prerequisites
+
+Check that the I²C environment is available:
+
+lsmod | grep i2c
+modinfo i2c-stub
+which i2cdetect
+
+Load userspace I²C support if needed:
+
+sudo modprobe i2c-dev
+
+---
+
+## 6. Build the driver
+
+From the module directory:
+
+make clean
+make
+
+Expected result:
+
+- myi2c.ko is generated successfully
+
+---
+
+## 7. Set up the fake I²C bus and devices
+
+Reload i2c-stub with both fake addresses:
+
+- 0x3c for the SSD1306-like device
+- 0x50 for the EEPROM
+
+sudo modprobe -r i2c_stub 2>/dev/null || true
+sudo modprobe i2c-stub chip_addr=0x3c,0x50
+
+---
+
+## 8. Verify the fake bus
+
+List all I²C buses:
+
+i2cdetect -l
+
+Expected:
+- a stub adapter appears, typically as i2c-1
+
+Scan the stub bus:
+
+sudo i2cdetect -y 1
+
+Expected output should include:
+
+- 3c for the fake OLED
+- 50 or UU for the EEPROM
+
+Example:
+
+     0  1  2  3  4  5  6  7  8  9  a  b  c  d  e  f
+00:                         -- -- -- -- -- -- -- --
+10: -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- --
+20: -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- --
+30: -- -- -- -- -- -- -- -- -- -- -- -- 3c -- -- --
+40: -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- --
+50: UU -- -- -- -- -- -- -- -- -- -- -- -- -- -- --
+60: -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- --
+70: -- -- -- -- -- -- -- --
+
+Notes:
+
+- 3c means a fake device is present at address 0x3c
+- UU at 0x50 means the EEPROM is already claimed by the at24 driver
+
+---
+
+## 9. Optional: recreate the fake EEPROM
+
+If the EEPROM was removed and you want to recreate it:
+
+echo 24c02 0x50 | sudo tee /sys/bus/i2c/devices/i2c-1/new_device
+
+Verify EEPROM sysfs node:
+
+find /sys -name eeprom 2>/dev/null
+
+Expected:
+- an EEPROM node such as /sys/devices/i2c-1/1-0050/eeprom
+
+---
+
+## 10. Insert the driver module
+
+From the module directory:
+
+sudo insmod myi2c.ko
+
+Check kernel logs:
+
+sudo dmesg | tail -n 50
+
+Expected messages:
+
+OLED Probed !!!
+Client Driver Added !!!
+
+This indicates:
+
+- the client device at 0x3c was created
+- the driver matched and bound
+- probe() executed successfully
+
+---
+
+## 11. Verify sysfs binding
+
+Inspect the I²C bus directory:
+
+tree /sys/devices/i2c-1
+
+Expected:
+- 1-003c
+- 1-0050
+
+Check the device name:
+
+cat /sys/devices/i2c-1/1-003c/name
+
+Expected:
+
+BPB_DEVICE
+
+Check the driver binding:
+
+readlink -f /sys/devices/i2c-1/1-003c/driver
+
+Expected path ending with:
+
+/sys/bus/i2c/drivers/BPB_DEVICE
+
+This confirms that the fake OLED client device is bound to your driver.
+
+---
+
+## 12. Remove the driver module
+
+Unload the module:
+
+sudo rmmod myi2c
+
+Check logs again:
+
+sudo dmesg | tail -n 50
+
+Expected messages:
+
+OLED Removed!!
+Client Driver Removed !!!
+
+This confirms:
+
+- remove() executed
+- the client device was unregistered
+- the driver was removed cleanly
+
+---
+
+## 13. What this test proves
+
+This test proves:
+
+- the module builds successfully
+- the module loads successfully
+- the driver can get the I²C adapter
+- the driver can create a client device at 0x3c
+- the Linux I²C core can match the device to the driver
+- the probe() callback runs
+- the remove() callback runs
+- the driver can operate over a software-only I²C adapter
+
+---
+
+## 14. What this test does not prove
+
+This test does not prove:
+
+- that the SSD1306 initialization sequence is electrically correct
+- that the OLED would display correct pixels on real hardware
+- that every i2c_master_send() succeeded unless return values are checked
+- that the command sequence fully matches the SSD1306 specification
+
+---
+
+## 15. Recommended improvement for stronger testing
+
+To make testing more meaningful, add temporary logging inside I2C_Write().
+
+Suggested checks:
+
+- log the transfer length
+- log the first byte (0x00 for command, 0x40 for data)
+- log the second byte (payload)
+- log the return value from i2c_master_send()
+
+This helps verify:
+
+- initialization commands were sent
+- display data writes were sent
+- transfers returned success
+
+For this driver, expected write pattern is:
+
+- several command writes during SSD1306_DisplayInit()
+- 128 * 8 = 1024 data writes during SSD1306_Fill(0xFF)
+
+---
+
+## 16. Useful commands summary
+
+Build:
+make clean
+make
+
+Set up fake bus:
+sudo modprobe -r i2c_stub 2>/dev/null || true
+sudo modprobe i2c-stub chip_addr=0x3c,0x50
+i2cdetect -l
+sudo i2cdetect -y 1
+
+Optional EEPROM recreation:
+echo 24c02 0x50 | sudo tee /sys/bus/i2c/devices/i2c-1/new_device
+
+Load module:
+sudo insmod myi2c.ko
+sudo dmesg | tail -n 50
+
+Check sysfs:
+tree /sys/devices/i2c-1
+cat /sys/devices/i2c-1/1-003c/name
+readlink -f /sys/devices/i2c-1/1-003c/driver
+
+Unload module:
+sudo rmmod myi2c
+sudo dmesg | tail -n 50
+
+---
+
+## 17. Expected success criteria
+
+The test is considered successful if all of the following are true:
+
+- i2cdetect -y 1 shows 3c
+- sudo insmod myi2c.ko succeeds
+- dmesg contains OLED Probed !!!
+- /sys/devices/i2c-1/1-003c exists while the module is loaded
+- /sys/devices/i2c-1/1-003c/name contains BPB_DEVICE
+- rmmod myi2c succeeds
+- dmesg contains OLED Removed!!
+
+---
+
+## 18. Troubleshooting
+
+Problem: insmod fails
+Possible causes:
+- wrong I²C bus number in the driver
+- i2c-stub not loaded
+- 0x3c not present on the stub bus
+- client creation failure
+
+Check:
+
+i2cdetect -l
+sudo i2cdetect -y 1
+
+Problem: no OLED Probed !!!
+Possible causes:
+- driver/device name mismatch
+- client device creation failed
+- module inserted but probe not triggered
+
+Check:
+
+sudo dmesg | tail -n 100
+
+Problem: /sys/devices/i2c-1/1-003c missing
+Possible causes:
+- module not loaded
+- module already removed
+- client creation failed
+
+---
+
+## 19. Final note
+
+This is a valid smoke test for an I²C client driver in a virtual machine.
+
+It is especially useful for verifying:
+
+- device creation
+- driver matching
+- probe/remove flow
+- basic write-path execution
+
+For more realistic SSD1306 validation, additional instrumentation or a more advanced emulator would be required.
