@@ -1,0 +1,4 @@
+1. To bind/unbind the nic from PCI
+ 1906  echo 0000:00:08.0 | sudo tee /sys/bus/pci/devices/0000:00:08.0/driver/unbind
+ 1907  echo 0000:00:08.0 | sudo tee /sys/bus/pci/drivers/simple_pci/bind
+
