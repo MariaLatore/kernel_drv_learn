@@ -1,0 +1,20 @@
+qemu-system-x86_64 \
+  -kernel ~/workspace/30Gsda5/linux-6.12.75/arch/x86/boot/bzImage \
+  -hda ~/workspace/buildroot/output/images/rootfs.ext2 \
+  -append "root=/dev/sda rootfstype=ext2 console=ttyS0,115200 rootwait systemd.log_level=debug systemd.log_target=console" \
+  -nographic -m 1024 
+
+
+  -object rng-random,filename=/dev/urandom,id=rng0 \
+  -device virtio-rng-pci,rng=rng0
+  -initrd initrd-final.gz \
+
+
+
+qemu-system-x86_64 \
+  -kernel ./bzImage_sec_success \
+  -hda ~/workspace/buildroot/output/images/rootfs.ext2 \
+  -append "root=/dev/sda rootfstype=ext2 console=ttyS0,115200 noapic rootwait systemd.log_level=debug systemd.log_target=console" \
+  -nographic -m 1024 
+
+
