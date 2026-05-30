@@ -1,0 +1,183 @@
+1. The organization is as follows:
+	zxy@debian:~/workspace/30Gsda5/myproject$ tree
+	.
+	├── app
+	│   ├── Makefile
+	│   └── sensor_tool.c
+	├── driver
+	│   ├── inc
+	│   │   └── mysensor_ioctl.h
+	│   ├── Makefile
+	│   └── src
+	│       ├── fakesensor.c
+	│       ├── fakesensor.h
+	│       └── mysensordrv.c
+	└── README
+   The app is mainly for test the dirver
+
+2. For driver: 
+       <a>make -C driver 
+       <b>make -C driver test=1
+       <c>make -C driver format
+       <d>make -C clean
+   <a>: To make the .ko driver target.
+   <b>: To test the dirver, besides making driver .ko file, this will automatically generate 2 devices matching the driver under /dev, named /dev/mychardev0, /dev/mychardev1
+   <c>: To format the src code of the driver if clang-format is installed
+   <d>: To clean the outputs.
+
+3. To make app, run
+       make -C app
+   To clean app, run
+       make -C app clean
+   App usage:
+	zxy@debian:~/workspace/30Gsda5/myproject/app$ ./sensor-cli 
+	Usage:
+	  ./sensor-cli <dev> get_status
+	  ./sensor-cli <dev> get_temp
+	  ./sensor-cli <dev> get_humidity
+	  ./sensor-cli <dev> get_threshold
+	  ./sensor-cli <dev> get_alarm
+	  ./sensor-cli <dev> set_temp <value>
+	  ./sensor-cli <dev> set_humidity <value>
+	  ./sensor-cli <dev> set_threshold <value>
+	  ./sensor-cli <dev> clear_alarm
+	  ./sensor-cli <dev> trigger_alarm
+	  ./sensor-cli <dev> wait_alarm
+	  ./sensor-cli <dev> wait_alarm_timeout <ms>
+
+	Example:
+	  ./sensor-cli /dev/mychardev0 get_status
+	  ./sensor-cli /dev/mychardev0 set_temp 88
+	  ./sensor-cli /dev/mychardev0 wait_alarm
+	  ./sensor-cli /dev/mychardev0 wait_alarm_timeout 5000
+	zxy@debian:~/workspace/30Gsda5/myproject/app$ 
+
+
+3. build kernel step, in build-root
+<0> preparation, run
+	zxy@debian:~/workspace/30Gsda5/buildroot$ qemu-system-arm -machine help
+	Supported machines are:
+	ast1030-evb          Aspeed AST1030 MiniBMC (Cortex-M4)
+	ast2500-evb          Aspeed AST2500 EVB (ARM1176)
+	ast2600-evb          Aspeed AST2600 EVB (Cortex-A7)
+	.....
+	zxy@debian:~/workspace/30Gsda5/buildroot$ 
+    to select a platform and we will modify the dfs of it.
+    We choose ast2600-evb
+<1> At the root dir of build root run
+	make menuconfig
+    to build rootfs, do not select kernel, just build rootfs first. Pay attention to the platform, use the information of <0>, for example:
+        Target Architecture (ARM (little endian))  --->
+        Target Architecture Variant (cortex-A7)  --->
+        Target ABI (EABIhf)  --->  
+        Floating point strategy (VFPv4-D16)  --->
+        ARM instruction set (ARM)  --->
+        Target Binary Format (ELF)  --->     
+<2> run make to build rootfs
+<3> make menuconfig, select kernel and select kernel config to default, see Kernel configuration in step <5>
+<4> make linux-menuconfig to modify the config, mainly to decrease the time to make kernel. I supplyed the .config with which I tested my driver. So can use this directly from step <5>.
+<5> copy the generated linux kernel output/build/linux-6.19.3/.config to buildroot root dir, and make menuconfig to select the config file, for example:
+     [*] Linux Kernel                                                                                   
+         Kernel version (Latest version (6.19))  --->                                               
+         ()    Custom kernel patches                                                                      
+         Kernel configuration (Using a custom (def)config file)  --->                                
+         (./arm32_config.txt) Configuration file path                                                     
+         ()    Additional configuration fragment files                                                    
+         ()    Custom boot logo file path                                                                 
+               Kernel binary format (zImage)  --->                  
+<6>  make linux-rebuild to build the kernel.
+
+4. We will now modify the kernel to inject our driver.
+<1> The step to modify kernel src can be found in the mysecure/README of this repo, we only give the Makefile of the module
+	zxy@debian:~/workspace/30Gsda5/buildroot/output/build/linux-6.19.3/drivers/mysensor$ pwd
+	/home/zxy/workspace/30Gsda5/buildroot/output/build/linux-6.19.3/drivers/mysensor
+	zxy@debian:~/workspace/30Gsda5/buildroot/output/build/linux-6.19.3/drivers/mysensor$ ls
+	built-in.a  inc  Kconfig  Makefile  modules.order  src
+	zxy@debian:~/workspace/30Gsda5/buildroot/output/build/linux-6.19.3/drivers/mysensor$ cat Makefile 
+	obj-$(CONFIG_MYSENSOR) += mysensor.o
+	ccflags-y += -I$(src)/inc -I$(src)/src
+	mysensor-y := src/mysensordrv.o src/fakesensor.o
+
+	zxy@debian:~/workspace/30Gsda5/buildroot/output/build/linux-6.19.3/drivers/mysensor$ 
+	zxy@debian:~/workspace/30Gsda5/buildroot/output/build/linux-6.19.3/drivers/mysensor$ cat Kconfig 
+	menu "MYSENSOR support"
+	config MYSENSOR
+		tristate "MYSENSOR Support"
+		default y
+		help
+		Say Y to enable MYSENSOR support, M to compile it as a module
+	endmenu
+	zxy@debian:~/workspace/30Gsda5/buildroot/output/build/linux-6.19.3/drivers/mysensor$ 
+<2> At build-root root dir, run make linux-menuconfig to confirm the menu of MYSENSOR appears.
+<3> Run make linux-rebuild to make our new kernel.
+<4> Modify the dtsi(arch/arm/boot/dts/aspeed/aspeed-ast2600-evb.dts at linux root dir) as follows:
+	......
+        vcc_sdhci0: regulator-vcc-sdhci0 {
+                compatible = "regulator-fixed";
+                regulator-name = "SDHCI0 Vcc";
+                regulator-min-microvolt = <3300000>;
+                regulator-max-microvolt = <3300000>;
+                gpios = <&gpio0 ASPEED_GPIO(V, 0) GPIO_ACTIVE
+_HIGH>;
+                enable-active-high;
+        };
+
+        mysensor: zxysensor {
+                compatible = "zxy,fakesensor";
+        };
+	.....
+       I supplyed the dts I used to test my driver.
+<5> At linux kernel src dir(output/build/linux-6.19.3), first run
+	export PATH=~/workspace/30Gsda5/buildroot/output/host/bin:$PATH
+    to add build root toolchain, then run
+	make ARCH=arm CROSS_COMPILE=arm-buildroot-linux-gnueabihf- arch/arm/boot/dts/aspeed/aspeed-ast2600-evb.dtb 
+    to build the new dtb
+<6> Use command
+	qemu-system-arm   -M ast2600-evb   -m 1024   -nographic   -kernel output/images/zImage   -dtb output/build/linux-6.19.3/arch/arm/boot/dts/aspeed/aspeed-ast2600-evb.dtb   -initrd output/images/rootfs.cpio   -append "console=ttyS4,115200 rdinit=/sbin/init"
+    To boot the machine.
+<7> The machine will not mount devtempfs by default ,run below command to see our device is working well:
+	Welcome to Buildroot
+	buildroot login: root
+	# [   14.637758] platform regulator-vccq-sdhci0: deferred probe pending: (reason unknown)
+	[   14.643960] platform regulator-vccq-sdhci1: deferred probe pending: (reason unknown)
+	[   14.644594] platform regulator-vcc-sdhci1: deferred probe pending: reg-fixed-voltage: can't get GPIO
+	[   14.651954] platform regulator-vcc-sdhci0: deferred probe pending: reg-fixed-voltage: can't get GPIO
+
+	# ls /dev
+	console  log      pts      stderr   stdout
+	fd       null     shm      stdin
+	# dmesg|grep my
+	[    0.021002] Console: colour dummy device 80x30
+	[    1.524589] myssdrv: register
+	[    1.524660] myssdrv: Major = 239 Minor = 0 
+	[    1.545441] myssdrv: probing
+	[    1.546254] myssdrv: probing finished, create /dev/mychardev0
+	[    1.546907] myssdrv: init success
+	# 
+	# cd /sys/class/mysensor_class/
+	# cd mychardev0/
+	# pwd
+	/sys/class/mysensor_class/mychardev0
+	# tree
+	.
+	|-- dev
+	|-- power
+	|   |-- autosuspend_delay_ms
+	|   |-- control
+	|   |-- runtime_active_time
+	|   |-- runtime_status
+	|   `-- runtime_suspended_time
+	|-- subsystem -> ../../../../class/mysensor_class
+	`-- uevent
+
+	1 directories, 8 files
+	# mount -t devtmpfs devtmpfs /dev
+	# ls -al /dev/mychardev0 
+	crw-rw-rw-    1 root     root      239,   0 Jan  1 00:00 /dev/mychardev0
+	# cat /dev/mychardev0 
+	[   88.608201] myssdrv: opened file name:mychardev0, major 239, minor: 0
+	[   88.609421] myssdrv: device read
+	[   88.623023] Read 26 bytes, 4070 left
+	[   88.623998] myssdrv: device read
+	temp=2 humidity=4 alarm=0
+	# 
