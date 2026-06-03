@@ -53,7 +53,7 @@
 	zxy@debian:~/workspace/30Gsda5/myproject/app$ 
 
 
-3. build kernel step, in build-root
+4. build kernel step, in build-root
 <0> preparation, run
 	zxy@debian:~/workspace/30Gsda5/buildroot$ qemu-system-arm -machine help
 	Supported machines are:
@@ -87,7 +87,7 @@
                Kernel binary format (zImage)  --->                  
 <6>  make linux-rebuild to build the kernel.
 
-4. We will now modify the kernel to inject our driver.
+5. We will now modify the kernel to inject our driver.
 <1> The step to modify kernel src can be found in the mysecure/README of this repo, we only give the Makefile of the module
 	zxy@debian:~/workspace/30Gsda5/buildroot/output/build/linux-6.19.3/drivers/mysensor$ pwd
 	/home/zxy/workspace/30Gsda5/buildroot/output/build/linux-6.19.3/drivers/mysensor
@@ -130,7 +130,7 @@ _HIGH>;
 <5> At linux kernel src dir(output/build/linux-6.19.3), first run
 	export PATH=~/workspace/30Gsda5/buildroot/output/host/bin:$PATH
     to add build root toolchain, then run
-	make ARCH=arm CROSS_COMPILE=arm-buildroot-linux-gnueabihf- arch/arm/boot/dts/aspeed/aspeed-ast2600-evb.dtb 
+	make ARCH=arm CROSS_COMPILE=arm-buildroot-linux-gnueabihf- aspeed/aspeed-ast2600-evb.dtb 
     to build the new dtb
 <6> Use command
 	qemu-system-arm   -M ast2600-evb   -m 1024   -nographic   -kernel output/images/zImage   -dtb output/build/linux-6.19.3/arch/arm/boot/dts/aspeed/aspeed-ast2600-evb.dtb   -initrd output/images/rootfs.cpio   -append "console=ttyS4,115200 rdinit=/sbin/init"

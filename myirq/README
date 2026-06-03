@@ -1,0 +1,788 @@
+0.Driver build, please refer to the mysecure&myproject of this repo
+
+1.Add device to qemu src
+zxy@debian:~/workspace/30Gsda5/Miscellaneous/qemu-10.0.8$ cat hw/misc/fakebell.c 
+/*
+ * Fake Bell device: minimal MMIO + IRQ demo device
+ */
+
+#include "qemu/osdep.h"
+#include "hw/sysbus.h"
+#include "qapi/error.h"
+#include "qemu/module.h"
+#include "qemu/timer.h"
+#include "hw/irq.h"
+#include "migration/vmstate.h"
+
+#define TYPE_FAKEBELL "fakebell"
+OBJECT_DECLARE_SIMPLE_TYPE(FakeBellState, FAKEBELL)
+
+#define FB_REG_STATUS        0x00
+#define FB_REG_IRQ_ENABLE    0x04
+#define FB_REG_IRQ_STATUS    0x08
+#define FB_REG_IRQ_ACK       0x0c
+#define FB_REG_EVENT_COUNT   0x10
+
+#define FB_STATUS_EVENT_ACTIVE   (1u << 0)
+#define FB_IRQ_ENABLE_EN         (1u << 0)
+#define FB_IRQ_STATUS_PENDING    (1u << 0)
+
+typedef struct FakeBellState {
+    SysBusDevice parent_obj;
+
+    MemoryRegion mmio;
+    qemu_irq irq;
+    QEMUTimer *timer;
+
+    uint32_t status;
+    uint32_t irq_enable;
+    uint32_t irq_status;
+    uint32_t event_count;
+} FakeBellState;
+
+static void fakebell_update_irq(FakeBellState *s)
+{
+    if ((s->irq_enable & FB_IRQ_ENABLE_EN) &&
+        (s->irq_status & FB_IRQ_STATUS_PENDING)) {
+        fprintf(stderr,
+                "fakebell: IRQ assert irq_enable=0x%x irq_status=0x%x event_count=%u\n",
+                s->irq_enable, s->irq_status, s->event_count);
+        qemu_set_irq(s->irq, 1);
+    } else {
+        fprintf(stderr,
+                "fakebell: IRQ deassert irq_enable=0x%x irq_status=0x%x event_count=%u\n",
+                s->irq_enable, s->irq_status, s->event_count);
+        qemu_set_irq(s->irq, 0);
+    }
+	fprintf(stderr, "ZZZ_UPDATE_IRQ enable=0x%x pending=0x%x event_count=%u\n",
+        s->irq_enable, s->irq_status, s->event_count);
+}
+
+static uint64_t fakebell_read(void *opaque, hwaddr offset, unsigned size)
+{
+    FakeBellState *s = opaque;
+    uint64_t val = 0;
+
+    if (size != 4) {
+        fprintf(stderr,
+                "fakebell: invalid read size=%u offset=0x%lx\n",
+                size, (unsigned long)offset);
+        return 0;
+    }
+
+    switch (offset) {
+    case FB_REG_STATUS:
+        val = s->status;
+        break;
+    case FB_REG_IRQ_ENABLE:
+        val = s->irq_enable;
+        break;
+    case FB_REG_IRQ_STATUS:
+        val = s->irq_status;
+        break;
+    case FB_REG_EVENT_COUNT:
+        val = s->event_count;
+        break;
+    case FB_REG_IRQ_ACK:
+    default:
+        val = 0;
+        break;
+    }
+
+    fprintf(stderr,
+            "fakebell: read offset=0x%lx size=%u -> 0x%lx\n",
+            (unsigned long)offset, size, (unsigned long)val);
+
+    return val;
+}
+
+static void fakebell_write(void *opaque, hwaddr offset, uint64_t value,
+                           unsigned size)
+{
+    FakeBellState *s = opaque;
+
+    fprintf(stderr,
+            "ZZZ_WRITE enter offset=0x%lx size=%u value=0x%lx status=0x%x irq_status=0x%x irq_enable=0x%x event_count=%u\n",
+            (unsigned long)offset, size, (unsigned long)value,
+            s->status, s->irq_status, s->irq_enable, s->event_count);
+
+    if (size != 4) {
+        fprintf(stderr,
+                "ZZZ_WRITE invalid size=%u offset=0x%lx value=0x%lx\n",
+                size, (unsigned long)offset, (unsigned long)value);
+        return;
+    }
+
+    switch (offset) {
+    case FB_REG_IRQ_ENABLE:
+        fprintf(stderr, "ZZZ_WRITE IRQ_ENABLE before=0x%x\n", s->irq_enable);
+        s->irq_enable = value & FB_IRQ_ENABLE_EN;
+        fprintf(stderr, "ZZZ_WRITE IRQ_ENABLE after=0x%x\n", s->irq_enable);
+        fakebell_update_irq(s);
+        break;
+
+    case FB_REG_IRQ_ACK:
+        fprintf(stderr,
+                "ZZZ_WRITE IRQ_ACK before clear status=0x%x irq_status=0x%x\n",
+                s->status, s->irq_status);
+        if (value & 0x1) {
+            s->status = 0;
+            s->irq_status = 0;
+            fprintf(stderr,
+                    "ZZZ_WRITE IRQ_ACK after clear status=0x%x irq_status=0x%x\n",
+                    s->status, s->irq_status);
+            fakebell_update_irq(s);
+        }
+        break;
+
+    default:
+        fprintf(stderr, "ZZZ_WRITE unknown offset=0x%lx ignored\n",
+                (unsigned long)offset);
+        break;
+    }
+}
+
+static const MemoryRegionOps fakebell_ops = {
+    .read = fakebell_read,
+    .write = fakebell_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid.min_access_size = 4,
+    .valid.max_access_size = 4,
+};
+
+static void fakebell_timer_cb(void *opaque)
+{
+    FakeBellState *s = opaque;
+    int64_t now;
+
+    fprintf(stderr,
+            "fakebell: timer enter: status=0x%x irq_enable=0x%x irq_status=0x%x event_count=%u\n",
+            s->status, s->irq_enable, s->irq_status, s->event_count);
+
+    if (!(s->irq_status & FB_IRQ_STATUS_PENDING)) {
+        s->event_count++;
+        s->status = FB_STATUS_EVENT_ACTIVE;
+        s->irq_status = FB_IRQ_STATUS_PENDING;
+
+        fprintf(stderr,
+                "fakebell: timer fired new event: event_count=%u status=0x%x irq_status=0x%x\n",
+                s->event_count, s->status, s->irq_status);
+
+        fakebell_update_irq(s);
+    } else {
+        fprintf(stderr,
+                "fakebell: timer skip, pending still set: status=0x%x irq_enable=0x%x irq_status=0x%x event_count=%u\n",
+                s->status, s->irq_enable, s->irq_status, s->event_count);
+    }
+
+    now = qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL);
+    timer_mod(s->timer, now + 2000);
+}
+
+static void fakebell_realize(DeviceState *dev, Error **errp)
+{
+    FakeBellState *s = FAKEBELL(dev);
+    int64_t now;
+
+    s->status = 0;
+    s->irq_enable = 0;
+    s->irq_status = 0;
+    s->event_count = 0;
+    qemu_set_irq(s->irq, 0);
+
+    fprintf(stderr, "fakebell: realize done, timer start\n");
+
+    s->timer = timer_new_ms(QEMU_CLOCK_VIRTUAL, fakebell_timer_cb, s);
+    now = qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL);
+    timer_mod(s->timer, now + 2000);
+}
+
+static void fakebell_unrealize(DeviceState *dev)
+{
+    FakeBellState *s = FAKEBELL(dev);
+
+    fprintf(stderr, "fakebell: unrealize\n");
+
+    if (s->timer) {
+        timer_del(s->timer);
+        timer_free(s->timer);
+        s->timer = NULL;
+    }
+}
+
+static void fakebell_init(Object *obj)
+{
+    FakeBellState *s = FAKEBELL(obj);
+
+    fprintf(stderr, "fakebell: init object\n");
+
+    memory_region_init_io(&s->mmio, obj, &fakebell_ops, s,
+                          "fakebell-mmio", 0x1000);
+    sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->mmio);
+    sysbus_init_irq(SYS_BUS_DEVICE(obj), &s->irq);
+}
+
+static const VMStateDescription vmstate_fakebell = {
+    .name = TYPE_FAKEBELL,
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (VMStateField[]) {
+        VMSTATE_UINT32(status, FakeBellState),
+        VMSTATE_UINT32(irq_enable, FakeBellState),
+        VMSTATE_UINT32(irq_status, FakeBellState),
+        VMSTATE_UINT32(event_count, FakeBellState),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
+static void fakebell_class_init(ObjectClass *klass, void *data)
+{
+    DeviceClass *dc = DEVICE_CLASS(klass);
+
+    fprintf(stderr, "fakebell: class init\n");
+
+    dc->realize = fakebell_realize;
+    dc->unrealize = fakebell_unrealize;
+    dc->vmsd = &vmstate_fakebell;
+    dc->desc = "Minimal fake bell MMIO/IRQ device";
+}
+
+static const TypeInfo fakebell_info = {
+    .name          = TYPE_FAKEBELL,
+    .parent        = TYPE_SYS_BUS_DEVICE,
+    .instance_size = sizeof(FakeBellState),
+    .instance_init = fakebell_init,
+    .class_init    = fakebell_class_init,
+};
+
+static void fakebell_register_types(void)
+{
+    fprintf(stderr, "fakebell: register type\n");
+    type_register_static(&fakebell_info);
+}
+
+type_init(fakebell_register_types)
+zxy@debian:~/workspace/30Gsda5/Miscellaneous/qemu-10.0.8$ 
+zxy@debian:~/workspace/30Gsda5/Miscellaneous/qemu-10.0.8$ cat hw/misc/meson.build|sed '15,22p' -n
+system_ss.add(when: 'CONFIG_A9SCU', if_true: files('a9scu.c'))
+system_ss.add(when: 'CONFIG_ARM11SCU', if_true: files('arm11scu.c'))
+
+system_ss.add(when: 'CONFIG_ARM_V7M', if_true: files('armv7m_ras.c'))
+system_ss.add(files('fakebell.c'))
+
+# Mac devices
+system_ss.add(when: 'CONFIG_MOS6522', if_true: files('mos6522.c'))
+zxy@debian:~/workspace/30Gsda5/Miscellaneous/qemu-10.0.8$ 
+zxy@debian:~/workspace/30Gsda5/Miscellaneous/qemu-10.0.8$ cat hw/arm/aspeed.c |sed '420,445p' -n
+    if (machine->kernel_filename) {
+        /*
+         * When booting with a -kernel command line there is no u-boot
+         * that runs to unlock the SCU. In this case set the default to
+         * be unlocked as the kernel expects
+         */
+        object_property_set_int(OBJECT(bmc->soc), "hw-prot-key",
+                                ASPEED_SCU_PROT_KEY, &error_abort);
+    }
+    connect_serial_hds_to_uarts(bmc);
+    qdev_realize(DEVICE(bmc->soc), NULL, &error_abort);
+
+    if(!strcmp(amc->soc_name, "ast2600-a3")){
+        Aspeed2600SoCState *a2600 = ASPEED2600_SOC(bmc->soc);
+        DeviceState *dev = qdev_new("fakebell");
+        SysBusDevice *sbd = SYS_BUS_DEVICE(dev);
+        sysbus_realize_and_unref(sbd, &error_fatal);
+        sysbus_mmio_map(sbd, 0, 0x1f000000);
+        sysbus_connect_irq(sbd, 0, qdev_get_gpio_in(DEVICE(&a2600->a7mpcore), 70));
+    }
+
+    if (defaults_enabled()) {
+        aspeed_board_init_flashes(&bmc->soc->fmc,
+                              bmc->fmc_model ? bmc->fmc_model : amc->fmc_model,
+                              amc->num_cs, 0);
+        aspeed_board_init_flashes(&bmc->soc->spi[0],
+zxy@debian:~/workspace/30Gsda5/Miscellaneous/qemu-10.0.8$ 
+
+2. Add to dts
+zxy@debian:~/workspace/30Gsda5/buildroot/output/build/linux-6.19.3$ cat arch/arm/boot/dts/aspeed/aspeed-ast2600-evb.dts|sed -n '50,70p'
+		regulator-max-microvolt = <3300000>;
+		gpios = <&gpio0 ASPEED_GPIO(V, 0) GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+	};
+
+        mysensor: zxysensor {
+		compatible = "zxy,fakesensor";
+	};
+
+	fakebell@1f000000 {
+		compatible = "zxy,fakebell";
+		reg = <0x1f000000 0x1000>;
+                interrupt-parent = <&gic>;
+		interrupts = <GIC_SPI 70 IRQ_TYPE_LEVEL_HIGH>;
+		status = "okay";
+	};
+
+	vccq_sdhci0: regulator-vccq-sdhci0 {
+		compatible = "regulator-gpio";
+		regulator-name = "SDHCI0 VccQ";
+		regulator-min-microvolt = <1800000>;
+zxy@debian:~/workspace/30Gsda5/buildroot/output/build/linux-6.19.3$ 
+
+3. qemu boot command
+zxy@debian:~/workspace/30Gsda5/buildroot$ ~/workspace/30Gsda5/Miscellaneous/qemu-10.0.8/output/bin/qemu-system-arm   -M ast2600-evb   -m 1024   -nographic   -monitor telnet:127.0.0.1:5555,server,nowait   -kernel output/images/zImage   -dtb output/build/linux-6.19.3/arch/arm/boot/dts/aspeed/aspeed-ast2600-evb.dtb   -initrd output/images/rootfs.cpio   -append "console=ttyS4,115200 rdinit=/sbin/init"
+
+
+4. result
+Welcome to Buildroot
+buildroot login: fakebell: timer enter: status=0x0 irq_enable=0x1 irq_status=0x0 event_count=3
+fakebell: timer fired new event: event_count=4 status=0x1 irq_status=0x1
+fakebell: IRQ assert irq_enable=0x1 irq_status=0x1 event_count=4
+ZZZ_UPDATE_IRQ enable=0x1 pending=0x1 event_count=4
+fakebell: read offset=0x8 size=4 -> 0x1
+fakebell: read offset=0x0 size=4 -> 0x1
+fakebell: read offset=0x10 size=4 -> 0x4
+fakebell: read offset=0x8 size=4 -> 0x1
+[    6.351990] mybell_driver 1f000000.fakebell: irq handled: irq_count=3 event_count=4 status=0x1 active=1 irq_status_before=0x1
+[    6.354312] mybell_driver 1f000000.fakebell: about to ack irq
+ZZZ_WRITE enter offset=0xc size=4 value=0x1 status=0x1 irq_status=0x1 irq_enable=0x1 event_count=4
+ZZZ_WRITE IRQ_ACK before clear status=0x1 irq_status=0x1
+ZZZ_WRITE IRQ_ACK after clear status=0x0 irq_status=0x0
+fakebell: IRQ deassert irq_enable=0x1 irq_status=0x0 event_count=4
+ZZZ_UPDATE_IRQ enable=0x1 pending=0x0 event_count=4
+[    6.354458] mybell_driver 1f000000.fakebell: ack irq done
+fakebell: read offset=0x8 size=4 -> 0x0
+[    6.354524] mybell_driver 1f000000.fakebell: irq_status_after=0x0
+root
+# 
+# 
+# 
+# 
+# fakebell: timer enter: status=0x0 irq_enable=0x1 irq_status=0x0 event_count=4
+fakebell: timer fired new event: event_count=5 status=0x1 irq_status=0x1
+fakebell: IRQ assert irq_enable=0x1 irq_status=0x1 event_count=5
+ZZZ_UPDATE_IRQ enable=0x1 pending=0x1 event_count=5
+fakebell: read offset=0x8 size=4 -> 0x1
+fakebell: read offset=0x0 size=4 -> 0x1
+fakebell: read offset=0x10 size=4 -> 0x5
+fakebell: read offset=0x8 size=4 -> 0x1
+[    8.132113] mybell_driver 1f000000.fakebell: irq handled: irq_count=4 event_count=5 status=0x1 active=1 irq_status_before=0x1
+[    8.132724] mybell_driver 1f000000.fakebell: about to ack irq
+ZZZ_WRITE enter offset=0xc size=4 value=0x1 status=0x1 irq_status=0x1 irq_enable=0x1 event_count=5
+ZZZ_WRITE IRQ_ACK before clear status=0x1 irq_status=0x1
+ZZZ_WRITE IRQ_ACK after clear status=0x0 irq_status=0x0
+fakebell: IRQ deassert irq_enable=0x1 irq_status=0x0 event_count=5
+ZZZ_UPDATE_IRQ enable=0x1 pending=0x0 event_count=5
+[    8.132848] mybell_driver 1f000000.fakebell: ack irq done
+fakebell: read offset=0x8 size=4 -> 0x0
+[    8.132948] mybell_driver 1f000000.fakebell: irq_status_after=0x0
+dmesg|grep my  
+[    0.015324] Console: colour dummy device 80x30
+[    1.439998] myssdrv: register
+[    1.440047] myssdrv: Major = 239 Minor = 0 
+[    1.450791] mfakebell: timer enter: status=0x0 irq_enable=0x1 irq_status=0x0 event_count=5
+fakebell: timer fired new event: event_count=6 status=0x1 irq_status=0x1
+fakebell: IRQ assert irq_enable=0x1 irq_status=0x1 event_count=6
+ZZZ_UPDATE_IRQ enable=0x1 pending=0x1 event_count=6
+yssdrv: probingfakebell: read offset=0x8 size=4 -> 0x1
+fakebell: read offset=0x0 size=4 -> 0x1
+fakebell: read offset=0x10 size=4 -> 0x6
+fakebell: read offset=0x8 size=4 -> 0x1
+[    9.927042] mybell_driver 1f000000.fakebell: irq handled: irq_count=5 event_count=6 status=0x1 active=1 irq_status_before=0x1
+
+[    9.956038] mybell_driver 1f000000.fakebell: about to ack irq
+ZZZ_WRITE enter offset=0xc size=4 value=0x1 status=0x1 irq_status=0x1 irq_enable=0x1 event_count=6
+ZZZ_WRITE IRQ_ACK before clear status=0x1 irq_status=0x1
+ZZZ_WRITE IRQ_ACK after clear status=0x0 irq_status=0x0
+fakebell: IRQ deassert irq_enable=0x1 irq_status=0x0 event_count=6
+ZZZ_UPDATE_IRQ enable=0x1 pending=0x0 event_count=6
+[    9.987966] mybell_driver 1f000000.fakebell: ack irq done
+fakebell: read offset=0x8 size=4 -> 0x0
+[   10.007194] mybell_driver 1f000000.fakebell: irq_status_after=0x0
+[    1.452254] myssdrv: probing finished, create /dev/mychardev0
+[    1.452483] myssdrv: init success
+[    1.452516] mybell: register
+[    1.456229] mybell_driver 1f000000.fakebell: probe success: irq=33 status=0x0 event_count=1
+[    2.792713] mybell_driver 1f000000.fakebell: irq handled: irq_count=1 event_count=2 status=0x1 active=1 irq_status_before=0x1
+[    2.802131] mybell_driver 1f000000.fakebell: about to ack irq
+[    2.802953] mybell_driver 1f000000.fakebell: ack irq done
+[    2.803102] mybell_driver 1f000000.fakebell: irq_status_after=0x0
+[    4.593410] mybell_driver 1f000000.fakebell: irq handled: irq_count=2 event_count=3 status=0x1 active=1 irq_status_before=0x1
+[    4.593886] mybell_driver 1f000000.fakebell: about to ack irq
+[    4.594269] mybell_driver 1f000000.fakebell: ack irq done
+[    4.594577] mybell_driver 1f000000.fakebell: irq_status_after=0x0
+[    6.351990] mybell_driver 1f000000.fakebell: irq handled: irq_count=3 event_count=4 status=0x1 active=1 irq_status_before=0x1
+[    6.354312] mybell_driver 1f000000.fakebell: about to ack irq
+[    6.354458] mybell_driver 1f000000.fakebell: ack irq done
+[    6.354524] mybell_driver 1f000000.fakebell: irq_status_after=0x0
+[    8.132113] mybell_driver 1f000000.fakebell: irq handled: irq_count=4 event_count=5 status=0x1 active=1 irq_status_before=0x1
+[    8.132724] mybell_driver 1f000000.fakebell: about to ack irq
+[    8.132848] mybell_driver 1f000000.fakebell: ack irq done
+[    8.132948] mybell_driver 1f000000.fakebell: irq_status_after=0x0
+# 
+# 
+# 
+# 
+# fakebell: timer enter: status=0x0 irq_enable=0x1 irq_status=0x0 event_count=6
+fakebell: timer fired new event: event_count=7 status=0x1 irq_status=0x1
+fakebell: IRQ assert irq_enable=0x1 irq_status=0x1 event_count=7
+ZZZ_UPDATE_IRQ enable=0x1 pending=0x1 event_count=7
+fakebell: read offset=0x8 size=4 -> 0x1
+fakebell: read offset=0x0 size=4 -> 0x1
+fakebell: read offset=0x10 size=4 -> 0x7
+fakebell: read offset=0x8 size=4 -> 0x1
+[   11.696300] mybell_driver 1f000000.fakebell: irq handled: irq_count=6 event_count=7 status=0x1 active=1 irq_status_before=0x1
+[   11.696628] mybell_driver 1f000000.fakebell: about to ack irq
+ZZZ_WRITE enter offset=0xc size=4 value=0x1 status=0x1 irq_status=0x1 irq_enable=0x1 event_count=7
+ZZZ_WRITE IRQ_ACK before clear status=0x1 irq_status=0x1
+ZZZ_WRITE IRQ_ACK after clear status=0x0 irq_status=0x0
+fakebell: IRQ deassert irq_enable=0x1 irq_status=0x0 event_count=7
+ZZZ_UPDATE_IRQ enable=0x1 pending=0x0 event_count=7
+[   11.696767] mybell_driver 1f000000.fakebell: ack irq done
+fakebell: read offset=0x8 size=4 -> 0x0
+[   11.696884] mybell_driver 1f000000.fakebell: irq_status_after=0x0
+
+# 
+# 
+# dmesg|grep my  
+[    0.015324] Console: colour dummy device 80x30
+[    1.439998] myssdrv: register
+[    1.440047] myssdrv: Major = 239 Minor = 0 
+[    1.450791] myssdrv: probing
+[    1.452254] myssdrv: probing finished, create /dev/mychardev0
+[    1.452483] myssdrv: init success
+[    1.452516] mybell: register
+[    1.456229] mybell_driver 1f000000.fakebell: probe success: irq=33 status=0x0 event_count=1
+[    2.792713] mybell_driver 1f000000.fakebell: irq handled: irq_count=1 event_count=2 status=0x1 active=1 irq_status_before=0x1
+[    2.802131] mybell_driver 1f000000.fakebell: about to ack irq
+[    2.802953] mybell_driver 1f000000.fakebell: ack irq done
+[    2.803102] mybell_driver 1f000000.fakebell: irq_status_after=0x0
+[    4.593410] mybell_driver 1f000000.fakebell: irq handled: irq_count=2 event_count=3 status=0x1 active=1 irq_status_before=0x1
+[    4.593886] mybell_driver 1f000000.fakebell: about to ack irq
+[    4.594269] mybell_driver 1f000000.fakebell: ack irq done
+[    4.594577] mybell_driver 1f000000.fakebell: irq_status_after=0x0
+[    6.351990] mybell_driver 1f000000.fakebell: irq handled: irq_count=3 event_count=4 status=0x1 active=1 irq_status_before=0x1
+[    6.354312] mybell_driver 1f000000.fakebell: about to ack irq
+[    6.354458] mybell_driver 1f000000.fakebell: ack irq done
+[    6.354524] mybell_driver 1f000000.fakebell: irq_status_after=0x0
+[    8.132113] mybell_driver 1f000000.fakebell: irq handled: irq_count=4 event_count=5 status=0x1 active=1 irq_status_before=0x1
+[    8.132724] mybell_driver 1f000000.fakebell: about to ack irq
+[    8.132848] mybell_driver 1f000000.fakebell: ack irq done
+[    8.132948] mybell_driver 1f000000.fakebell: irq_status_after=0x0
+[    9.927042] mybell_driver 1f000000.fakebell: irq handled: irq_count=5 event_count=6 status=0x1 active=1 irq_status_before=0x1
+[    9.956038] mybell_driver 1f000000.fakebell: about to ack irq
+[    9.987966] mybell_driver 1f000000.fakebell: ack irq done
+[   10.007194] mybell_driver 1f000000.fakebell: irq_status_after=0x0
+[   11.696300] mybell_driver 1f000000.fakebell: irq handled: irq_count=6 event_count=7 status=0x1 active=1 irq_status_before=0x1
+[   11.696628] mybell_driver 1f000000.fakebell: about to ack irq
+[   11.696767] mybell_driver 1f000000.fakebell: ack irq done
+[   11.696884] mybell_driver 1f000000.fakebell: irq_status_after=0x0
+# [   12.899793] platform regulator-vcc-sdhci0: deferred probe pending: reg-fixed-voltage: can't get GPIO
+[   12.900712] platform regulator-vcc-sdhci1: deferred probe pending: reg-fixed-voltage: can't get GPIO
+[   12.901461] platform regulator-vccq-sdhci0: deferred probe pending: (reason unknown)
+[   12.902071] platform regulator-vccq-sdhci1: deferred probe pending: (reason unknown)
+fakebell: timer enter: status=0x0 irq_enable=0x1 irq_status=0x0 event_count=7
+fakebell: timer fired new event: event_count=8 status=0x1 irq_status=0x1
+fakebell: IRQ assert irq_enable=0x1 irq_status=0x1 event_count=8
+ZZZ_UPDATE_IRQ enable=0x1 pending=0x1 event_count=8
+fakebell: read offset=0x8 size=4 -> 0x1
+fakebell: read offset=0x0 size=4 -> 0x1
+fakebell: read offset=0x10 size=4 -> 0x8
+fakebell: read offset=0x8 size=4 -> 0x1
+[   13.480430] mybell_driver 1f000000.fakebell: irq handled: irq_count=7 event_count=8 status=0x1 active=1 irq_status_before=0x1
+[   13.481031] mybell_driver 1f000000.fakebell: about to ack irq
+ZZZ_WRITE enter offset=0xc size=4 value=0x1 status=0x1 irq_status=0x1 irq_enable=0x1 event_count=8
+ZZZ_WRITE IRQ_ACK before clear status=0x1 irq_status=0x1
+ZZZ_WRITE IRQ_ACK after clear status=0x0 irq_status=0x0
+fakebell: IRQ deassert irq_enable=0x1 irq_status=0x0 event_count=8
+ZZZ_UPDATE_IRQ enable=0x1 pending=0x0 event_count=8
+[   13.481507] mybell_driver 1f000000.fakebell: ack irq done
+fakebell: read offset=0x8 size=4 -> 0x0
+[   13.482043] mybell_driver 1f000000.fakebell: irq_status_after=0x0
+
+# 
+# 
+# 
+# 
+# 
+# 
+# fakebell: timer enter: status=0x0 irq_enable=0x1 irq_status=0x0 event_count=8
+fakebell: timer fired new event: event_count=9 status=0x1 irq_status=0x1
+fakebell: IRQ assert irq_enable=0x1 irq_status=0x1 event_count=9
+ZZZ_UPDATE_IRQ enable=0x1 pending=0x1 event_count=9
+fakebell: read offset=0x8 size=4 -> 0x1
+fakebell: read offset=0x0 size=4 -> 0x1
+fakebell: read offset=0x10 size=4 -> 0x9
+fakebell: read offset=0x8 size=4 -> 0x1
+[   15.264091] mybell_driver 1f000000.fakebell: irq handled: irq_count=8 event_count=9 status=0x1 active=1 irq_status_before=0x1
+[   15.264610] mybell_driver 1f000000.fakebell: about to ack irq
+ZZZ_WRITE enter offset=0xc size=4 value=0x1 status=0x1 irq_status=0x1 irq_enable=0x1 event_count=9
+ZZZ_WRITE IRQ_ACK before clear status=0x1 irq_status=0x1
+ZZZ_WRITE IRQ_ACK after clear status=0x0 irq_status=0x0
+fakebell: IRQ deassert irq_enable=0x1 irq_status=0x0 event_count=9
+ZZZ_UPDATE_IRQ enable=0x1 pending=0x0 event_count=9
+[   15.264885] mybell_driver 1f000000.fakebell: ack irq done
+fakebell: read offset=0x8 size=4 -> 0x0
+[   15.265092] mybell_driver 1f000000.fakebell: irq_status_after=0x0
+
+# 
+# 
+# 
+# fakebell: timer enter: status=0x0 irq_enable=0x1 irq_status=0x0 event_count=9
+fakebell: timer fired new event: event_count=10 status=0x1 irq_status=0x1
+fakebell: IRQ assert irq_enable=0x1 irq_status=0x1 event_count=10
+ZZZ_UPDATE_IRQ enable=0x1 pending=0x1 event_count=10
+fakebell: read offset=0x8 size=4 -> 0x1
+fakebell: read offset=0x0 size=4 -> 0x1
+fakebell: read offset=0x10 size=4 -> 0xa
+fakebell: read offset=0x8 size=4 -> 0x1
+[   17.035379] mybell_driver 1f000000.fakebell: irq handled: irq_count=9 event_count=10 status=0x1 active=1 irq_status_before=0x1
+[   17.036315] mybell_driver 1f000000.fakebell: about to ack irq
+ZZZ_WRITE enter offset=0xc size=4 value=0x1 status=0x1 irq_status=0x1 irq_enable=0x1 event_count=10
+ZZZ_WRITE IRQ_ACK before clear status=0x1 irq_status=0x1
+ZZZ_WRITE IRQ_ACK after clear status=0x0 irq_status=0x0
+fakebell: IRQ deassert irq_enable=0x1 irq_status=0x0 event_count=10
+ZZZ_UPDATE_IRQ enable=0x1 pending=0x0 event_count=10
+[   17.036816] mybell_driver 1f000000.fakebell: ack irq done
+fakebell: read offset=0x8 size=4 -> 0x0
+[   17.037237] mybell_driver 1f000000.fakebell: irq_status_after=0x0
+# dmesg|grep my  
+
+[    0.015324] Console: colour dummy device 80x30
+[    1.439998] myssdrv: register
+[    1.440047] myssdrv: Major = 239 Minor = 0 
+[    1.450791] myssdrv: probing
+[    1.452254] myssdrv: probing finished, create /dev/mychardev0
+[    1.452483] myssdrv: init success
+[    1.452516] mybell: register
+[    1.456229] mybell_driver 1f000000.fakebell: probe success: irq=33 status=0x0 event_count=1
+[    2.792713] mybell_driver 1f000000.fakebell: irq handled: irq_count=1 event_count=2 status=0x1 active=1 irq_status_before=0x1
+[    2.802131] mybell_driver 1f000000.fakebell: about to ack irq
+[    2.802953] mybell_driver 1f000000.fakebell: ack irq done
+[    2.803102] mybell_driver 1f000000.fakebell: irq_status_after=0x0
+[    4.593410] mybell_driver 1f000000.fakebell: irq handled: irq_count=2 event_count=3 status=0x1 active=1 irq_status_before=0x1
+[    4.593886] mybell_driver 1f000000.fakebell: about to ack irq
+[    4.594269] mybell_driver 1f000000.fakebell: ack irq done
+[    4.594577] mybell_driver 1f000000.fakebell: irq_status_after=0x0
+[    6.351990] mybell_driver 1f000000.fakebell: irq handled: irq_count=3 event_count=4 status=0x1 active=1 irq_status_before=0x1
+[    6.354312] mybell_driver 1f000000.fakebell: about to ack irq
+[    6.354458] mybell_driver 1f000000.fakebell: ack irq done
+[    6.354524] mybell_driver 1f000000.fakebell: irq_status_after=0x0
+[    8.132113] mybell_driver 1f000000.fakebell: irq handled: irq_count=4 event_count=5 status=0x1 active=1 irq_status_before=0x1
+[    8.132724] mybell_driver 1f000000.fakebell: about to ack irq
+[    8.132848] mybell_driver 1f000000.fakebell: ack irq done
+[    8.132948] mybell_driver 1f000000.fakebell: irq_status_after=0x0
+[    9.927042] mybell_driver 1f000000.fakebell: irq handled: irq_count=5 event_count=6 status=0x1 active=1 irq_status_before=0x1
+[    9.956038] mybell_driver 1f000000.fakebell: about to ack irq
+[    9.987966] mybell_driver 1f000000.fakebell: ack irq done
+[   10.007194] mybell_driver 1f000000.fakebell: irq_status_after=0x0
+[   11.696300] mybell_driver 1f000000.fakebell: irq handled: irq_count=6 event_count=7 status=0x1 active=1 irq_status_before=0x1
+[   11.696628] mybell_driver 1f000000.fakebell: about to ack irq
+[   11.696767] mybell_driver 1f000000.fakebell: ack irq done
+[   11.696884] mybell_driver 1f000000.fakebell: irq_status_after=0x0
+[   13.480430] mybell_driver 1f000000.fakebell: irq handled: irq_count=7 event_count=8 status=0x1 active=1 irq_status_before=0x1
+[   13.481031] mybell_driver 1f000000.fakebell: about to ack irq
+[   13.481507] mybell_driver 1f000000.fakebell: ack irq done
+[   13.482043] mybell_driver 1f000000.fakebell: irq_status_after=0x0
+[   15.264091] mybell_driver 1f000000.fakebell: irq handled: irq_count=8 event_count=9 status=0x1 active=1 irq_status_before=0x1
+[   15.264610] mybell_driver 1f000000.fakebell: about to ack irq
+[   15.264885] mybell_driver 1f000000.fakebell: ack irq done
+[   15.265092] mybell_driver 1f000000.fakebell: irq_status_after=0x0
+[   17.035379] mybell_driver 1f000000.fakebell: irq handled: irq_count=9 event_count=10 status=0x1 active=1 irq_status_before=0x1
+[   17.036315] mybell_driver 1f000000.fakebell: about to ack irq
+[   17.036816] mybell_driver 1f000000.fakebell: ack irq done
+[   17.037237] mybell_driver 1f000000.fakebell: irq_status_after=0x0
+# 
+# 
+# 
+# 
+# 
+# 
+# 
+# 
+# 
+# fakebell: timer enter: status=0x0 irq_enable=0x1 irq_status=0x0 event_count=10
+fakebell: timer fired new event: event_count=11 status=0x1 irq_status=0x1
+fakebell: IRQ assert irq_enable=0x1 irq_status=0x1 event_count=11
+ZZZ_UPDATE_IRQ enable=0x1 pending=0x1 event_count=11
+fakebell: read offset=0x8 size=4 -> 0x1
+fakebell: read offset=0x0 size=4 -> 0x1
+fakebell: read offset=0x10 size=4 -> 0xb
+fakebell: read offset=0x8 size=4 -> 0x1
+[   18.818543] mybell_driver 1f000000.fakebell: irq handled: irq_count=10 event_count=11 status=0x1 active=1 irq_status_before=0x1
+[   18.821391] mybell_driver 1f000000.fakebell: about to ack irq
+ZZZ_WRITE enter offset=0xc size=4 value=0x1 status=0x1 irq_status=0x1 irq_enable=0x1 event_count=11
+ZZZ_WRITE IRQ_ACK before clear status=0x1 irq_status=0x1
+ZZZ_WRITE IRQ_ACK after clear status=0x0 irq_status=0x0
+fakebell: IRQ deassert irq_enable=0x1 irq_status=0x0 event_count=11
+ZZZ_UPDATE_IRQ enable=0x1 pending=0x0 event_count=11
+[   18.821710] mybell_driver 1f000000.fakebell: ack irq done
+fakebell: read offset=0x8 size=4 -> 0x0
+[   18.821969] mybell_driver 1f000000.fakebell: irq_status_after=0x0
+fakebell: timer enter: status=0x0 irq_enable=0x1 irq_status=0x0 event_count=11
+fakebell: timer fired new event: event_count=12 status=0x1 irq_status=0x1
+fakebell: IRQ assert irq_enable=0x1 irq_status=0x1 event_count=12
+ZZZ_UPDATE_IRQ enable=0x1 pending=0x1 event_count=12
+fakebell: read offset=0x8 size=4 -> 0x1
+fakebell: read offset=0x0 size=4 -> 0x1
+fakebell: read offset=0x10 size=4 -> 0xc
+fakebell: read offset=0x8 size=4 -> 0x1
+[   20.600074] mybell_driver 1f000000.fakebell: irq handled: irq_count=11 event_count=12 status=0x1 active=1 irq_status_before=0x1
+[   20.600306] mybell_driver 1f000000.fakebell: about to ack irq
+ZZZ_WRITE enter offset=0xc size=4 value=0x1 status=0x1 irq_status=0x1 irq_enable=0x1 event_count=12
+ZZZ_WRITE IRQ_ACK before clear status=0x1 irq_status=0x1
+ZZZ_WRITE IRQ_ACK after clear status=0x0 irq_status=0x0
+fakebell: IRQ deassert irq_enable=0x1 irq_status=0x0 event_count=12
+ZZZ_UPDATE_IRQ enable=0x1 pending=0x0 event_count=12
+[   20.600416] mybell_driver 1f000000.fakebell: ack irq done
+fakebell: read offset=0x8 size=4 -> 0x0
+[   20.600493] mybell_driver 1f000000.fakebell: irq_status_after=0x0
+fakebell: timer enter: status=0x0 irq_enable=0x1 irq_status=0x0 event_count=12
+fakebell: timer fired new event: event_count=13 status=0x1 irq_status=0x1
+fakebell: IRQ assert irq_enable=0x1 irq_status=0x1 event_count=13
+ZZZ_UPDATE_IRQ enable=0x1 pending=0x1 event_count=13
+fakebell: read offset=0x8 size=4 -> 0x1
+fakebell: read offset=0x0 size=4 -> 0x1
+fakebell: read offset=0x10 size=4 -> 0xd
+fakebell: read offset=0x8 size=4 -> 0x1
+[   22.381921] mybell_driver 1f000000.fakebell: irq handled: irq_count=12 event_count=13 status=0x1 active=1 irq_status_before=0x1
+[   22.382201] mybell_driver 1f000000.fakebell: about to ack irq
+ZZZ_WRITE enter offset=0xc size=4 value=0x1 status=0x1 irq_status=0x1 irq_enable=0x1 event_count=13
+ZZZ_WRITE IRQ_ACK before clear status=0x1 irq_status=0x1
+ZZZ_WRITE IRQ_ACK after clear status=0x0 irq_status=0x0
+fakebell: IRQ deassert irq_enable=0x1 irq_status=0x0 event_count=13
+ZZZ_UPDATE_IRQ enable=0x1 pending=0x0 event_count=13
+[   22.382326] mybell_driver 1f000000.fakebell: ack irq done
+fakebell: read offset=0x8 size=4 -> 0x0
+[   22.382412] mybell_driver 1f000000.fakebell: irq_status_after=0x0
+
+# 
+# 
+# fakebell: timer enter: status=0x0 irq_enable=0x1 irq_status=0x0 event_count=13
+fakebell: timer fired new event: event_count=14 status=0x1 irq_status=0x1
+fakebell: IRQ assert irq_enable=0x1 irq_status=0x1 event_count=14
+ZZZ_UPDATE_IRQ enable=0x1 pending=0x1 event_count=14
+fakebell: read offset=0x8 size=4 -> 0x1
+fakebell: read offset=0x0 size=4 -> 0x1
+fakebell: read offset=0x10 size=4 -> 0xe
+fakebell: read offset=0x8 size=4 -> 0x1
+[   24.158249] mybell_driver 1f000000.fakebell: irq handled: irq_count=13 event_count=14 status=0x1 active=1 irq_status_before=0x1
+[   24.159101] mybell_driver 1f000000.fakebell: about to ack irq
+ZZZ_WRITE enter offset=0xc size=4 value=0x1 status=0x1 irq_status=0x1 irq_enable=0x1 event_count=14
+ZZZ_WRITE IRQ_ACK before clear status=0x1 irq_status=0x1
+ZZZ_WRITE IRQ_ACK after clear status=0x0 irq_status=0x0
+fakebell: IRQ deassert irq_enable=0x1 irq_status=0x0 event_count=14
+ZZZ_UPDATE_IRQ enable=0x1 pending=0x0 event_count=14
+[   24.159537] mybell_driver 1f000000.fakebell: ack irq done
+fakebell: read offset=0x8 size=4 -> 0x0
+[   24.159710] mybell_driver 1f000000.fakebell: irq_status_after=0x0
+ cat /proc/interrupts
+           CPU0       CPU1       
+ 27:          0          0 GIC-0  29 Level     arch_timer
+ 28:        480        738 GIC-0  30 Level     arch_timer
+ 31:        181          0 GIC-0  40 Level     ttyS4
+ 32:          0          0 GIC-0  41 Level     ehci_hcd:usb1
+ 33:         13          0 GIC-0 102 Level     1f000000.fakebell
+IPI0:         0          0  CPU wakeup interrupts
+IPI1:         0          0  Timer broadcast interrupts
+IPI2:        63         69  Rescheduling interrupts
+IPI3:       218        175  Function call interrupts
+IPI4:         0          0  CPU stop interrupts
+IPI5:         0          0  IRQ work interrupts
+IPI6:         0          0  completion interrupts
+Err:          0
+# 
+# 
+# 
+fakebell: timer enter: status=0x0 irq_enable=0x1 irq_status=0x0 event_count=14
+fakebell: timer fired new event: event_count=15 status=0x1 irq_status=0x1
+fakebell: IRQ assert irq_enable=0x1 irq_status=0x1 event_count=15
+ZZZ_UPDATE_IRQ enable=0x1 pending=0x1 event_count=15
+# fakebell: read offset=0x8 size=4 -> 0x1
+fakebell: read offset=0x0 size=4 -> 0x1
+fakebell: read offset=0x10 size=4 -> 0xf
+fakebell: read offset=0x8 size=4 -> 0x1
+[   25.968400] mybell_driver 1f000000.fakebell: irq handled: irq_count=14 event_count=15 status=0x1 active=1 irq_status_before=0x1
+[   26.003694] mybell_driver 1f000000.fakebell: about to ack irq
+ZZZ_WRITE enter offset=0xc size=4 value=0x1 status=0x1 irq_status=0x1 irq_enable=0x1 event_count=15
+ZZZ_WRITE IRQ_ACK before clear status=0x1 irq_status=0x1
+ZZZ_WRITE IRQ_ACK after clear status=0x0 irq_status=0x0
+fakebell: IRQ deassert irq_enable=0x1 irq_status=0x0 event_count=15
+ZZZ_UPDATE_IRQ enable=0x1 pending=0x0 event_count=15
+ [   26.020051] mybell_driver 1f000000.fakebell: ack irq done
+fakebell: read offset=0x8 size=4 -> 0x0
+[   26.042911] mybell_driver 1f000000.fakebell: irq_status_after=0x0
+cat /proc/interrupts
+           CPU0       CPU1       
+ 27:          0          0 GIC-0  29 Level     arch_timer
+ 28:        495        776 GIC-0  30 Level     arch_timer
+ 31:        208          0 GIC-0  40 Level     ttyS4
+ 32:          0          0 GIC-0  41 Level     ehci_hcd:usb1
+ 33:         14          0 GIC-0 102 Level     1f000000.fakebell
+IPI0:         0          0  CPU wakeup interrupts
+IPI1:         0          0  Timer broadcast interrupts
+IPI2:        65         70  Rescheduling interrupts
+IPI3:       233        185  Function call interrupts
+IPI4:         0          0  CPU stop interrupts
+IPI5:         0          0  IRQ work interrupts
+IPI6:         0          0  completion interrupts
+Err:          0
+
+# 
+# 
+# 
+# 
+# 
+# 
+# fakebell: timer enter: status=0x0 irq_enable=0x1 irq_status=0x0 event_count=15
+fakebell: timer fired new event: event_count=16 status=0x1 irq_status=0x1
+fakebell: IRQ assert irq_enable=0x1 irq_status=0x1 event_count=16
+ZZZ_UPDATE_IRQ enable=0x1 pending=0x1 event_count=16
+fakebell: read offset=0x8 size=4 -> 0x1
+fakebell: read offset=0x0 size=4 -> 0x1
+fakebell: read offset=0x10 size=4 -> 0x10
+fakebell: read offset=0x8 size=4 -> 0x1
+[   27.718533] mybell_driver 1f000000.fakebell: irq handled: irq_count=15 event_count=16 status=0x1 active=1 irq_status_before=0x1
+[   27.718856] mybell_driver 1f000000.fakebell: about to ack irq
+ZZZ_WRITE enter offset=0xc size=4 value=0x1 status=0x1 irq_status=0x1 irq_enable=0x1 event_count=16
+ZZZ_WRITE IRQ_ACK before clear status=0x1 irq_status=0x1
+ZZZ_WRITE IRQ_ACK after clear status=0x0 irq_status=0x0
+fakebell: IRQ deassert irq_enable=0x1 irq_status=0x0 event_count=16
+ZZZ_UPDATE_IRQ enable=0x1 pending=0x0 event_count=16
+[   27.719000] mybell_driver 1f000000.fakebell: ack irq done
+fakebell: read offset=0x8 size=4 -> 0x0
+[   27.719120] mybell_driver 1f000000.fakebell: irq_status_after=0x0
+
+5.To see the basic io definition,
+    see below zxy @debian : ~/ workspace / 30Gsda5 / linux -
+        6.12.75 / arch / x86$ grep -
+        r '__writel' include / asm /
+            io.h : build_mmio_write(__writel, "l", unsigned int, "r", ) include
+            / asm / io.h : #define writel_relaxed(v, a) __writel(v, a) include /
+            asm / io.h : #define __raw_writel __writel zxy @debian : ~/
+            workspace / 30Gsda5 / linux
+        - 6.12.75 / arch / x86$ grep -
+        r 'build_mmio_write' include / asm /
+            io.h : #define
+                   build_mmio_write(name, size, type, reg, barrier) include
+            / asm /
+            io.h
+    : build_mmio_write(writeb, "b", unsigned char, "q", : "memory") include
+            / asm /
+            io.h
+    : build_mmio_write(writew, "w", unsigned short, "r", : "memory") include
+            / asm /
+            io.h
+    : build_mmio_write(writel, "l", unsigned int, "r", : "memory") include
+            / asm /
+            io.h : build_mmio_write(__writeb, "b", unsigned char, "q", ) include
+            / asm /
+            io.h
+    : build_mmio_write(__writew, "w", unsigned short, "r", ) include
+            / asm /
+            io.h : build_mmio_write(__writel, "l", unsigned int, "r", ) include
+            / asm /
+            io.h : build_mmio_write(writeq, "q", u64, "r", : "memory") include /
+            asm /
+            io.h : build_mmio_write(__writeq, "q", u64, "r", ) zxy @debian
+    : ~/ workspace
+            / 30Gsda5 / linux
+        - 6.12.75 / arch / x86$
