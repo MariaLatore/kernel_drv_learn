@@ -1,6 +1,6 @@
 0.Driver build, please refer to the mysecure&myproject of this repo
 
-1.Add device to qemu src
+1.Add device to qemu src, note that we only need to build qemu-system-arm, no need to build the whole thing.
 zxy@debian:~/workspace/30Gsda5/Miscellaneous/qemu-10.0.8$ cat hw/misc/fakebell.c 
 /*
  * Fake Bell device: minimal MMIO + IRQ demo device

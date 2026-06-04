@@ -1,0 +1,338 @@
+1. Build the driver into the linux kernel. Please refer to the myirq dir in this repo. Just replace the mybell.c's content by myalarm.c's content is enough.
+
+2. This time we test our user app under userapp of this folder. Below is how to share the file into the qemu:
+zxy@debian:~/workspace/30Gsda5/practice/myalarm/userapp$ ~/workspace/30Gsda5/buildroot/output/host/bin/arm-buildroot-linux-gnueabihf-gcc -Wall main.c -o testapp
+zxy@debian:~/workspace/30Gsda5/practice/myalarm/userapp$ cp ~/shared/30Gsda5/pr^Ctice/alarmdevice/myalarm.c .
+zxy@debian:~/workspace/30Gsda5/practice/myalarm/userapp$ ~/workspace/30Gsda5/buildroot/output/host/bin/arm-buildroot-linux-gnueabihf-gcc -Wall main.c -o testapp
+zxy@debian:~/workspace/30Gsda5/practice/myalarm/userapp$ cp testapp ~/workspace/30Gsda5/buildroot/qemu_share/
+zxy@debian:~/workspace/30Gsda5/practice/myalarm/userapp$ cd ~/workspace/30Gsda5/buildroot/qemu_share/
+zxy@debian:~/workspace/30Gsda5/buildroot/qemu_share$ find . | cpio -H newc -o > ../extra.cpio
+17 blocks
+zxy@debian:~/workspace/30Gsda5/buildroot/qemu_share$ cd ..
+zxy@debian:~/workspace/30Gsda5/buildroot$ 
+zxy@debian:~/workspace/30Gsda5/buildroot$ cat output/images/rootfs.cpio extra.cpio > combined.cpio
+zxy@debian:~/workspace/30Gsda5/buildroot$ ~/workspace/30Gsda5/Miscellaneous/qemu-10.0.8/output/bin/qemu-system-arm   -M ast2600-evb   -m 1024   -nographic   -monitor telnet:127.0.0.1:5555,server,nowait   -kernel output/images/zImage   -dtb output/build/linux-6.19.3/arch/arm/boot/dts/aspeed/aspeed-ast2600-evb.dtb   -initrd combined.cpio   -append "console=ttyS4,115200 rdinit=/sbin/init"
+........
+........
+........
+Welcome to Buildroot
+buildroot login: [    4.744903] my_alarm_driver 1f000000.fakebell: irq handled: irq_count=0 event_count=3 status=0x1 active=1 irq_status_before=0x1
+[    4.748734] my_alarm_driver 1f000000.fakebell: irq_status_after=0x0
+root
+# 
+# 
+# 
+# d[    6.522346] my_alarm_driver 1f000000.fakebell: irq handled: irq_count=0 event_count=4 status=0x1 active=1 irq_status_before=0x1
+[    6.526346] my_alarm_driver 1f000000.fakebell: irq_status_after=0x0
+
+# 
+# 
+# 
+# d[    8.299754] my_alarm_driver 1f000000.fakebell: irq handled: irq_count=0 event_count=5 status=0x1 active=1 irq_status_before=0x1
+[    8.302357] my_alarm_driver 1f000000.fakebell: irq_status_after=0x0
+
+# 
+# dme[   10.078147] my_alarm_driver 1f000000.fakebell: irq handled: irq_count=0 event_count=6 status=0x1 active=1 irq_status_before=0x1
+[   10.078670] my_alarm_driver 1f000000.fakebell: irq_status_after=0x0
+sg -n 4
+# 
+# 
+# 
+# dmesg -n 4
+# mount -t devtmpfs /dev
+mount: can't find /dev in /etc/fstab
+# mount -t devtmpfs devtmpfs  /dev
+# 
+# cd /
+# ls
+bin           init          media         root          testapp
+crond.reboot  lib           mnt           run           tmp
+dev           lib32         opt           sbin          usr
+etc           linuxrc       proc          sys           var
+# 
+# 
+# ls -al testapp
+-rwxrwxr-x    1 1000     1000          8176 Jun  4  2026 testapp
+# ./testapp 
+opened /dev/myalarm0
+waiting for alarm ...
+alarm event: Alarm:1
+alarm cleared
+waiting for alarm ...
+alarm event: Alarm:1
+alarm cleared
+waiting for alarm ...
+alarm event: Alarm:1
+alarm cleared
+waiting for alarm ...
+alarm event: Alarm:1
+alarm cleared
+waiting for alarm ...
+alarm event: Alarm:1
+
+3. Note that this time we inherit myirq's aspeed-ast2600-evb.dts and modified qemu. However, we modified a little to get rid of the annoying debug log print in qemu,
+
+zxy@debian:~/workspace/30Gsda5/Miscellaneous/qemu-10.0.8$ cat hw/misc/fakebell.c 
+/*
+ * Fake Bell device: minimal MMIO + IRQ demo device
+ */
+
+#include "qemu/osdep.h"
+#include "hw/sysbus.h"
+#include "qapi/error.h"
+#include "qemu/module.h"
+#include "qemu/timer.h"
+#include "qemu/log.h"
+#include "hw/irq.h"
+#include "migration/vmstate.h"
+
+#define TYPE_FAKEBELL "fakebell"
+OBJECT_DECLARE_SIMPLE_TYPE(FakeBellState, FAKEBELL)
+
+#define FB_REG_STATUS        0x00
+#define FB_REG_IRQ_ENABLE    0x04
+#define FB_REG_IRQ_STATUS    0x08
+#define FB_REG_IRQ_ACK       0x0c
+#define FB_REG_EVENT_COUNT   0x10
+
+#define FB_STATUS_EVENT_ACTIVE   (1u << 0)
+#define FB_IRQ_ENABLE_EN         (1u << 0)
+#define FB_IRQ_STATUS_PENDING    (1u << 0)
+
+typedef struct FakeBellState {
+    SysBusDevice parent_obj;
+
+    MemoryRegion mmio;
+    qemu_irq irq;
+    QEMUTimer *timer;
+
+    uint32_t status;
+    uint32_t irq_enable;
+    uint32_t irq_status;
+    uint32_t event_count;
+} FakeBellState;
+
+static void fakebell_update_irq(FakeBellState *s)
+{
+    if ((s->irq_enable & FB_IRQ_ENABLE_EN) &&
+        (s->irq_status & FB_IRQ_STATUS_PENDING)) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                "fakebell: IRQ assert irq_enable=0x%x irq_status=0x%x event_count=%u\n",
+                s->irq_enable, s->irq_status, s->event_count);
+        qemu_set_irq(s->irq, 1);
+    } else {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                "fakebell: IRQ deassert irq_enable=0x%x irq_status=0x%x event_count=%u\n",
+                s->irq_enable, s->irq_status, s->event_count);
+        qemu_set_irq(s->irq, 0);
+    }
+	qemu_log_mask(LOG_GUEST_ERROR, "ZZZ_UPDATE_IRQ enable=0x%x pending=0x%x event_count=%u\n",
+        s->irq_enable, s->irq_status, s->event_count);
+}
+
+static uint64_t fakebell_read(void *opaque, hwaddr offset, unsigned size)
+{
+    FakeBellState *s = opaque;
+    uint64_t val = 0;
+
+    if (size != 4) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                "fakebell: invalid read size=%u offset=0x%lx\n",
+                size, (unsigned long)offset);
+        return 0;
+    }
+
+    switch (offset) {
+    case FB_REG_STATUS:
+        val = s->status;
+        break;
+    case FB_REG_IRQ_ENABLE:
+        val = s->irq_enable;
+        break;
+    case FB_REG_IRQ_STATUS:
+        val = s->irq_status;
+        break;
+    case FB_REG_EVENT_COUNT:
+        val = s->event_count;
+        break;
+    case FB_REG_IRQ_ACK:
+    default:
+        val = 0;
+        break;
+    }
+
+    qemu_log_mask(LOG_GUEST_ERROR,
+            "fakebell: read offset=0x%lx size=%u -> 0x%lx\n",
+            (unsigned long)offset, size, (unsigned long)val);
+
+    return val;
+}
+
+static void fakebell_write(void *opaque, hwaddr offset, uint64_t value,
+                           unsigned size)
+{
+    FakeBellState *s = opaque;
+
+    qemu_log_mask(LOG_GUEST_ERROR,
+            "ZZZ_WRITE enter offset=0x%lx size=%u value=0x%lx status=0x%x irq_status=0x%x irq_enable=0x%x event_count=%u\n",
+            (unsigned long)offset, size, (unsigned long)value,
+            s->status, s->irq_status, s->irq_enable, s->event_count);
+
+    if (size != 4) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                "ZZZ_WRITE invalid size=%u offset=0x%lx value=0x%lx\n",
+                size, (unsigned long)offset, (unsigned long)value);
+        return;
+    }
+
+    switch (offset) {
+    case FB_REG_IRQ_ENABLE:
+        qemu_log_mask(LOG_GUEST_ERROR, "ZZZ_WRITE IRQ_ENABLE before=0x%x\n", s->irq_enable);
+        s->irq_enable = value & FB_IRQ_ENABLE_EN;
+        qemu_log_mask(LOG_GUEST_ERROR, "ZZZ_WRITE IRQ_ENABLE after=0x%x\n", s->irq_enable);
+        fakebell_update_irq(s);
+        break;
+
+    case FB_REG_IRQ_ACK:
+        qemu_log_mask(LOG_GUEST_ERROR,
+                "ZZZ_WRITE IRQ_ACK before clear status=0x%x irq_status=0x%x\n",
+                s->status, s->irq_status);
+        if (value & 0x1) {
+            s->status = 0;
+            s->irq_status = 0;
+            qemu_log_mask(LOG_GUEST_ERROR,
+                    "ZZZ_WRITE IRQ_ACK after clear status=0x%x irq_status=0x%x\n",
+                    s->status, s->irq_status);
+            fakebell_update_irq(s);
+        }
+        break;
+
+    default:
+        qemu_log_mask(LOG_GUEST_ERROR, "ZZZ_WRITE unknown offset=0x%lx ignored\n",
+                (unsigned long)offset);
+        break;
+    }
+}
+
+static const MemoryRegionOps fakebell_ops = {
+    .read = fakebell_read,
+    .write = fakebell_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid.min_access_size = 4,
+    .valid.max_access_size = 4,
+};
+
+static void fakebell_timer_cb(void *opaque)
+{
+    FakeBellState *s = opaque;
+    int64_t now;
+
+    qemu_log_mask(LOG_GUEST_ERROR,
+            "fakebell: timer enter: status=0x%x irq_enable=0x%x irq_status=0x%x event_count=%u\n",
+            s->status, s->irq_enable, s->irq_status, s->event_count);
+
+    if (!(s->irq_status & FB_IRQ_STATUS_PENDING)) {
+        s->event_count++;
+        s->status = FB_STATUS_EVENT_ACTIVE;
+        s->irq_status = FB_IRQ_STATUS_PENDING;
+
+        qemu_log_mask(LOG_GUEST_ERROR,
+                "fakebell: timer fired new event: event_count=%u status=0x%x irq_status=0x%x\n",
+                s->event_count, s->status, s->irq_status);
+
+        fakebell_update_irq(s);
+    } else {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                "fakebell: timer skip, pending still set: status=0x%x irq_enable=0x%x irq_status=0x%x event_count=%u\n",
+                s->status, s->irq_enable, s->irq_status, s->event_count);
+    }
+
+    now = qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL);
+    timer_mod(s->timer, now + 2000);
+}
+
+static void fakebell_realize(DeviceState *dev, Error **errp)
+{
+    FakeBellState *s = FAKEBELL(dev);
+    int64_t now;
+
+    s->status = 0;
+    s->irq_enable = 0;
+    s->irq_status = 0;
+    s->event_count = 0;
+    qemu_set_irq(s->irq, 0);
+
+    qemu_log_mask(LOG_GUEST_ERROR, "fakebell: realize done, timer start\n");
+
+    s->timer = timer_new_ms(QEMU_CLOCK_VIRTUAL, fakebell_timer_cb, s);
+    now = qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL);
+    timer_mod(s->timer, now + 2000);
+}
+
+static void fakebell_unrealize(DeviceState *dev)
+{
+    FakeBellState *s = FAKEBELL(dev);
+
+    qemu_log_mask(LOG_GUEST_ERROR, "fakebell: unrealize\n");
+
+    if (s->timer) {
+        timer_del(s->timer);
+        timer_free(s->timer);
+        s->timer = NULL;
+    }
+}
+
+static void fakebell_init(Object *obj)
+{
+    FakeBellState *s = FAKEBELL(obj);
+
+    qemu_log_mask(LOG_GUEST_ERROR, "fakebell: init object\n");
+
+    memory_region_init_io(&s->mmio, obj, &fakebell_ops, s,
+                          "fakebell-mmio", 0x1000);
+    sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->mmio);
+    sysbus_init_irq(SYS_BUS_DEVICE(obj), &s->irq);
+}
+
+static const VMStateDescription vmstate_fakebell = {
+    .name = TYPE_FAKEBELL,
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (VMStateField[]) {
+        VMSTATE_UINT32(status, FakeBellState),
+        VMSTATE_UINT32(irq_enable, FakeBellState),
+        VMSTATE_UINT32(irq_status, FakeBellState),
+        VMSTATE_UINT32(event_count, FakeBellState),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
+static void fakebell_class_init(ObjectClass *klass, void *data)
+{
+    DeviceClass *dc = DEVICE_CLASS(klass);
+
+    qemu_log_mask(LOG_GUEST_ERROR, "fakebell: class init\n");
+
+    dc->realize = fakebell_realize;
+    dc->unrealize = fakebell_unrealize;
+    dc->vmsd = &vmstate_fakebell;
+    dc->desc = "Minimal fake bell MMIO/IRQ device";
+}
+
+static const TypeInfo fakebell_info = {
+    .name          = TYPE_FAKEBELL,
+    .parent        = TYPE_SYS_BUS_DEVICE,
+    .instance_size = sizeof(FakeBellState),
+    .instance_init = fakebell_init,
+    .class_init    = fakebell_class_init,
+};
+
+static void fakebell_register_types(void)
+{
+    qemu_log_mask(LOG_GUEST_ERROR, "fakebell: register type\n");
+    type_register_static(&fakebell_info);
+}
+
+type_init(fakebell_register_types)
+zxy@debian:~/workspace/30Gsda5/Miscellaneous/qemu-10.0.8$ 
+
