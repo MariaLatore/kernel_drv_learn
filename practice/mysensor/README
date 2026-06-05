@@ -1,0 +1,82 @@
+1. The test method is as myalrm of this repo
+
+2. result:
+Welcome to Buildroot
+buildroot login: root[    8.201820] mysensor_driver 1f000000.fakebell: irq handled: event_count=5 status=0x1 active=1 irq_status_before=0x1
+[    8.202818] mysensor_driver 1f000000.fakebell: irq_status_after=0x0
+
+# 
+# 
+# 
+# 
+# ls
+# [    9.979013] mysensor_driver 1f000000.fakebell: irq handled: event_count=6 status=0x1 active=1 irq_status_before=0x1
+[    9.981289] mysensor_driver 1f000000.fakebell: irq_status_after=0x0
+
+# 
+# 
+# 
+# 
+# [   11.758604] mysensor_driver 1f000000.fakebell: irq handled: event_count=7 status=0x1 active=1 irq_status_before=0x1
+[   11.758862] mysensor_driver 1f000000.fakebell: irq_status_after=0x0
+[   13.537213] mysensor_driver 1f000000.fakebell: irq handled: event_count=8 status=0x1 active=1 irq_status_before=0x1
+[   13.537581] mysensor_driver 1f000000.fakebell: irq_status_after=0x0
+
+# 
+# [   15.314883] mysensor_driver 1f000000.fakebell: irq handled: event_count=9 status=0x1 active=1 irq_status_before=0x1
+[   15.315135] mysensor_driver 1f000000.fakebell: irq_status_after=0x0
+dmesg -n [   17.112201] mysensor_driver 1f000000.fakebell: irq handled: event_count=10 status=0x1 active=1 irq_status_before=0x1
+[   17.130736] mysensor_driver 1f000000.fakebell: irq_status_after=0x0
+4
+# 
+# 
+# 
+# mount -t devtmpfs devtmpfs /dev
+# cd /
+# ls
+bin            init           mnt            sbin           var
+combined.cpio  lib            opt            sys
+crond.reboot   lib32          proc           testapp
+dev            linuxrc        root           tmp
+etc            media          run            usr
+# ./testapp 
+Testing driver node: /dev/mysensor0
+
+========== test open/release ==========
+open(/dev/mysensor0) success, fd=3
+close() success
+
+========== test nonblocking read ==========
+nonblocking read returned 33 bytes: Value: 0, Timestamp: 1.755179546
+
+========== test poll ==========
+waiting up to 5000 ms for data ...
+poll returned 1, revents=0x1
+read after poll returned 33 bytes: Value: 1, Timestamp: 2.586796567
+
+========== test blocking read ==========
+calling blocking read(), waiting for sensor data ...
+blocking read returned 33 bytes: Value: 2, Timestamp: 4.343130006
+
+All available interfaces tested.
+# ./testapp 
+Testing driver node: /dev/mysensor0
+
+========== test open/release ==========
+open(/dev/mysensor0) success, fd=3
+close() success
+
+========== test nonblocking read ==========
+nonblocking read returned 33 bytes: Value: 3, Timestamp: 6.116244548
+
+========== test poll ==========
+waiting up to 5000 ms for data ...
+poll returned 1, revents=0x1
+read after poll returned 33 bytes: Value: 4, Timestamp: 7.895229329
+
+========== test blocking read ==========
+calling blocking read(), waiting for sensor data ...
+blocking read returned 33 bytes: Value: 5, Timestamp: 9.673709778
+
+All available interfaces tested.
+
